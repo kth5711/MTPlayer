@@ -10,7 +10,7 @@
 - [LICENSE](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/LICENSE)
 - [THIRD_PARTY_NOTICES.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/THIRD_PARTY_NOTICES.md)
 - [README.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/README.md)
-- [ai_install/README.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/ai_install/README.md)
+- [install/README.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/install/README.md)
 
 ## Installed-Edition Release
 
@@ -20,7 +20,7 @@
   기본 포함하지 않는다.
 - 운영자 또는 사용자가 직접 설치/다운로드하도록 안내한다.
 - 설치 가이드는 [README.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/README.md)
-  와 [ai_install/README.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/ai_install/README.md)
+  와 [install/README.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/install/README.md)
   를 기준으로 유지한다.
 
 ## If You Bundle Third-Party Binaries

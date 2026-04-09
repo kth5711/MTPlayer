@@ -60,7 +60,7 @@ where python >nul 2>nul
 if errorlevel 1 (
   popd
   echo No launcher or Python executable was found.
-  echo Run ai_install\install_windows.ps1 first, or create run_multi_play_local.bat.
+  echo Run install\install_windows.ps1 first, or create run_multi_play_local.bat.
   pause
   exit /b 1
 )

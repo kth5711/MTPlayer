@@ -9,7 +9,7 @@ from i18n import tr
 
 
 SCENE_ANALYSIS_INSTALL_COMMAND = (
-    r"powershell -ExecutionPolicy Bypass -File .\ai_install\install_windows.ps1 -InstallSceneAnalysis"
+    r"powershell -ExecutionPolicy Bypass -File .\install\install_windows.ps1 -InstallSceneAnalysis"
 )
 
 

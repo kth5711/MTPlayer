@@ -16,7 +16,7 @@ advice.
 
 - The checked-in installed edition does **not** bundle FFmpeg, VLC, subtitle
   models, or Hugging Face models by default.
-- `ai_install/install_windows.ps1` installs Python packages and can provision
+- `install/install_windows.ps1` installs Python packages and can provision
   system dependencies on the target PC.
 - If you later redistribute bundled FFmpeg/VLC binaries or model files, you
   must carry the relevant upstream licenses and notices with that bundle.

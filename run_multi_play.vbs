@@ -55,7 +55,7 @@ If fso.FileExists(envPython) Then
 End If
 
 MsgBox "No launcher or Python executable was found." & vbCrLf & _
-       "Run ai_install\install_windows.ps1 first, or create run_multi_play_local.bat.", _
+       "Run install\install_windows.ps1 first, or create run_multi_play_local.bat.", _
        vbExclamation, "Multi-Play"
 WScript.Quit 1
 

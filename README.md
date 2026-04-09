@@ -1,8 +1,7 @@
-# MP
+# MTPlayer
 
-- AI-friendly Windows install bundle: `ai_install/README.md`
-- Portable single-env layout guide: [PORTABLE.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/PORTABLE.md)
-- `씬분석` 스택은 이제 옵션 설치다. 기본 플레이어만 쓰면 `ai_install/install_windows.ps1` 기본 실행으로 충분하고, 필요한 경우에만 `-InstallSceneAnalysis`를 붙인다.
+- AI-friendly Windows install bundle: `install/README.md`
+- `씬분석` 스택은 이제 옵션 설치다. 기본 플레이어만 쓰면 `install/install_windows.ps1` 기본 실행으로 충분하고, 필요한 경우에만 `-InstallSceneAnalysis`를 붙인다.
 - Open-source notice set:
   - [LICENSE](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/LICENSE)
   - [THIRD_PARTY_NOTICES.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/THIRD_PARTY_NOTICES.md)
@@ -14,13 +13,13 @@ Windows PowerShell에서 바로 실행할 명령:
 기본 플레이어만:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\ai_install\install_windows.ps1
+powershell -ExecutionPolicy Bypass -File .\install\install_windows.ps1
 ```
 
 플레이어 + 씬분석:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\ai_install\install_windows.ps1 -InstallSceneAnalysis
+powershell -ExecutionPolicy Bypass -File .\install\install_windows.ps1 -InstallSceneAnalysis
 ```
 
 이미 메인 env를 만든 상태에서 씬분석 core 패키지만 직접 추가:
@@ -32,7 +31,7 @@ pip install numpy opencv-python scenedetect pillow
 시스템 FFmpeg/VLC는 직접 관리하고 Python 패키지만 설치:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\ai_install\install_windows.ps1 -InstallSceneAnalysis -SkipSystemDeps
+powershell -ExecutionPolicy Bypass -File .\install\install_windows.ps1 -InstallSceneAnalysis -SkipSystemDeps
 ```
 
 ## Dependencies
@@ -228,40 +227,19 @@ setx MULTIPLAY_TRANSLATE_GGUF "C:\path\to\model.gguf"
 - 플레이어 + 유사씬:
   위 구성 + `torch`, `transformers`, `huggingface_hub`, `safetensors`, `accelerate`, `sentencepiece`
 - 자막 생성:
-  별도 `multi-play-asr` env + `faster-whisper`
+  메인 `multi-play` env 또는 별도 `multi-play-asr` env + `faster-whisper`
 - 자막 번역:
   `llama.cpp` + GGUF
 
 ## Subtitle Add-ons
 
-- 현재 앱은 자막 생성과 자막 번역을 `메인 앱 env` 밖의 helper runtime으로 붙이는 구조다.
+- 현재 앱은 자막 생성 Python을 자동 탐색하고, 현재 실행 중인 env가 `faster_whisper`를 import할 수 있으면 그 env를 먼저 사용한다.
 - 권장 구성:
   - 메인 앱/씬분석: `multi-play` env 또는 `.venv-multi-play`
-  - 자막 생성 helper: 별도 `multi-play-asr` env 또는 `.venv-multi-play-asr`
+  - 자막 생성 helper: 메인 env 그대로 사용하거나, 필요하면 별도 `multi-play-asr` env 또는 `.venv-multi-play-asr`
   - 자막 번역 helper: `llama.cpp` binary + GGUF model
 - 이유:
   - `faster-whisper`와 `llama.cpp`는 Windows에서 CUDA/cuBLAS/cuDNN 조합 영향이 크다.
-  - 메인 플레이어/씬분석 env를 안정적으로 두고, subtitle stack만 별도 관리하는 편이 배포 이식성이 좋다.
-- 자세한 Windows 설치 순서는 [ai_install/README.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/ai_install/README.md)의 `Optional subtitle stack`과 `GPU generation guide`를 따른다.
-
-## Lint
-
-- 구조 lint 기본 규칙은 `신규 파일 실코드 200줄 이하`, `신규/증가 함수 실코드 30줄 이하`다.
-- 레거시 대형 파일은 한 번에 전부 막지 않고, `HEAD` 대비 더 커진 경우만 구조 lint 에서 실패시킨다.
-- 기본 실행은 `python3 tools/lint.py <변경한 .py 파일>` 이고, 인자를 생략하면 현재 변경된 Python 파일을 대상으로 돈다.
-- 추가로 `ruff`를 같이 쓰려면 `python3 -m pip install -r requirements-lint.txt` 로 설치한다.
-## Portable
-
-포터블은 단순 파일 복사만으로 끝나지 않는다. 앱 트리 복사, `.venv` 생성, 런타임 폴더(`ffmpeg`, `vlc`, `llama`, `models`) 배치가 필요하다.
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\ai_install\assemble_portable.ps1 `
-  -TargetDir C:\work\Multi-Play-Portable
-```
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\ai_install\setup_portable_env.ps1 `
-  -PortableRoot C:\work\Multi-Play-Portable
-```
-
-상세 구조와 옵션은 [PORTABLE.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/PORTABLE.md)를 본다.
+  - 특히 `CUDA 13` 계열이나 노트북/드라이버 조합이 불안정한 PC에서는 subtitle stack만 별도 관리하는 편이 안전하다.
+  - 반대로 `CUDA 12.x` 기준으로 메인 env가 안정적이면 같은 env에 넣어도 된다.
+- 자세한 Windows 설치 순서는 [install/README.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/install/README.md)의 `Optional subtitle stack`과 `GPU generation guide`를 따른다.

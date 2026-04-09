@@ -19,23 +19,23 @@ Files:
 - `post_install_check.py`: validates imports, FFmpeg, VLC, CUDA, `import main`, and a minimal GUI/VLC startup smoke test
 
 Recommended flow:
-1. Run `powershell -ExecutionPolicy Bypass -File .\ai_install\bootstrap_check.ps1`
-2. Read `.\ai_install\output\system_report.json`
-3. Run `powershell -ExecutionPolicy Bypass -File .\ai_install\install_windows.ps1`
-4. Run `python .\ai_install\post_install_check.py --json-out .\ai_install\output\post_install_report.json`
+1. Run `powershell -ExecutionPolicy Bypass -File .\install\bootstrap_check.ps1`
+2. Read `.\install\output\system_report.json`
+3. Run `powershell -ExecutionPolicy Bypass -File .\install\install_windows.ps1`
+4. Run `python .\install\post_install_check.py --json-out .\install\output\post_install_report.json`
 
 Copy-paste install commands:
 
 Base player only:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\ai_install\install_windows.ps1
+powershell -ExecutionPolicy Bypass -File .\install\install_windows.ps1
 ```
 
 Base player + scene analysis:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\ai_install\install_windows.ps1 -InstallSceneAnalysis
+powershell -ExecutionPolicy Bypass -File .\install\install_windows.ps1 -InstallSceneAnalysis
 ```
 
 If the base env already exists and you only want the scene-analysis core packages manually:
@@ -47,7 +47,7 @@ pip install numpy opencv-python scenedetect pillow
 Base player + scene analysis without FFmpeg/VLC auto-install:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\ai_install\install_windows.ps1 -InstallSceneAnalysis -SkipSystemDeps
+powershell -ExecutionPolicy Bypass -File .\install\install_windows.ps1 -InstallSceneAnalysis -SkipSystemDeps
 ```
 
 Current install policy:
@@ -62,9 +62,9 @@ Current install policy:
 - subtitle generation / subtitle translation helper stack is not provisioned by `install_windows.ps1` yet; operators should install it separately
 
 Recommended install split:
-- base player only: `powershell -ExecutionPolicy Bypass -File .\ai_install\install_windows.ps1`
-- base player + scene analysis: `powershell -ExecutionPolicy Bypass -File .\ai_install\install_windows.ps1 -InstallSceneAnalysis`
-- skip FFmpeg/VLC auto-install only when you intentionally manage them yourself: `powershell -ExecutionPolicy Bypass -File .\ai_install\install_windows.ps1 -SkipSystemDeps`
+- base player only: `powershell -ExecutionPolicy Bypass -File .\install\install_windows.ps1`
+- base player + scene analysis: `powershell -ExecutionPolicy Bypass -File .\install\install_windows.ps1 -InstallSceneAnalysis`
+- skip FFmpeg/VLC auto-install only when you intentionally manage them yourself: `powershell -ExecutionPolicy Bypass -File .\install\install_windows.ps1 -SkipSystemDeps`
 - optional subtitle add-ons: keep them outside the main app env and manage them separately
 
 Install split quick reference:
@@ -96,50 +96,58 @@ Dependency split:
   Current app behavior: remembers selected `llama` binary, GGUF path, source language, target language after first successful selection
 
 Optional subtitle stack:
-1. Create a separate helper env for ASR instead of adding `faster-whisper` into the main app env.
-2. Recommended Windows helper env examples:
+1. If the main app env is already stable on `CUDA 12.x`, you can install ASR dependencies into that same env.
+2. Same-env activation examples:
 
 ```powershell
-conda create -n multi-play-asr python=3.11 -y
-conda activate multi-play-asr
+conda activate multi-play
+```
+
+```powershell
+.\.venv-multi-play\Scripts\activate
+```
+
+3. Then install the GPU ASR packages:
+
+```powershell
 python -m pip install --upgrade pip
 pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
 pip install faster-whisper av
 ```
 
-```powershell
-py -3.11 -m venv .venv-multi-play-asr
-.\.venv-multi-play-asr\Scripts\activate
-python -m pip install --upgrade pip
-pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
-pip install faster-whisper av
-```
-
-3. CPU-only fallback examples:
+4. If you are on `CUDA 13`, or that PC has DLL/runtime conflicts, create a separate helper env for ASR instead.
+5. Separate helper env creation/activation examples:
 
 ```powershell
 conda create -n multi-play-asr python=3.11 -y
 conda activate multi-play-asr
-python -m pip install --upgrade pip
-pip install faster-whisper av
 ```
 
 ```powershell
 py -3.11 -m venv .venv-multi-play-asr
 .\.venv-multi-play-asr\Scripts\activate
+```
+
+6. Then run the same GPU ASR package install commands from step 3.
+
+7. CPU-only fallback:
+
+Conda or venv activation is the same as above. After activation, run:
+
+```powershell
 python -m pip install --upgrade pip
 pip install faster-whisper av
 ```
 
-4. Install `llama.cpp` separately.
+8. Install `llama.cpp` separately.
    Recommended binary on Windows:
    - NVIDIA GPU: `Windows x64 (CUDA 12)` build
    - CPU-only: `Windows x64 (CPU)` build
-5. Download a `TranslateGemma` GGUF manually. The app does not auto-download translation models.
-6. First run behavior:
+9. Download a `TranslateGemma` GGUF manually. The app does not auto-download translation models.
+10. First run behavior:
    - `자막 생성` will auto-detect a Python that can import `faster_whisper`, then remember it as `subtitle_asr_python`
    - `자막 번역` will auto-detect or ask for `llama-server.exe` and a GGUF model, then remember them in config
-7. Useful overrides:
+11. Useful overrides:
    - `MULTIPLAY_SUBTITLE_PYTHON`
    - `MULTIPLAY_LLAMA_BIN`
    - `MULTIPLAY_TRANSLATE_GGUF`
@@ -147,27 +155,29 @@ pip install faster-whisper av
 GPU generation guide:
 - GTX 10 / GTX 16:
   - Treat CPU path as the safe baseline.
-  - If you want GPU subtitle generation, verify the helper env on that PC first; keep `faster-whisper` isolated from the main app env.
+  - If you want GPU subtitle generation, verify imports and runtime on that PC first. Same env is possible, but a separate helper env is still the safer fallback.
   - For translation, prefer smaller GGUF such as `TranslateGemma 4B Q4_K_M`.
 - RTX 20:
-  - Recommended split: main app in `multi-play` env or `.venv-multi-play`, subtitles in separate `multi-play-asr` env or `.venv-multi-play-asr`.
+  - Same env is usually fine when `torch`/`faster-whisper`/`av` already work together.
+  - If that PC shows DLL/runtime conflicts, split subtitles into `multi-play-asr` or `.venv-multi-play-asr`.
   - `faster-whisper turbo` GPU path is usually the first option to try.
   - For translation, `TranslateGemma 4B Q4_K_M` or `Q5_K_M` is the practical target.
 - RTX 30:
-  - Recommended full GPU helper path: separate subtitle helper env with CUDA 12.x `torch` wheel + `faster-whisper`, plus `llama.cpp` CUDA 12 build.
+  - `CUDA 12.x` same-env path is acceptable if the main env is already stable.
+  - If you hit DLL/runtime conflicts, move subtitles into a separate helper env with CUDA 12.x `torch` wheel + `faster-whisper`.
   - `TranslateGemma 4B Q5_K_M` is the default recommendation.
 - RTX 40:
   - Same recommendation as RTX 30.
   - If VRAM is comfortable, translation can move from `Q4_K_M` to `Q5_K_M` or higher.
 - RTX 50:
-  - Do not tie subtitle helpers to the main app env. Keep a separate helper env.
+  - Separate helper env is still the default recommendation.
   - Prefer CUDA 12.x helper tooling for portability across PCs.
   - Current project guidance is separate subtitle helper env + `torch` CUDA 12.8 wheel + `llama.cpp` Windows CUDA 12 build.
   - For translation, start with `TranslateGemma 4B Q5_K_M`.
 
 Notes on the 10~50 guide:
 - The GPU guide above is project-side deployment guidance, not a strict vendor support matrix.
-- The main point is portability: keep the player/scene-analysis env stable, and keep subtitle ASR/translation runtimes isolated.
+- The main point is portability: `CUDA 13` 또는 불안정 조합이면 subtitle ASR/translation runtimes를 분리하고, `CUDA 12.x`에서 이미 안정적인 env라면 같은 env도 허용한다.
 - `faster-whisper` currently expects CUDA 12 libraries and cuDNN 9 on GPU, and current `llama.cpp` releases provide both Windows CUDA 12 and CUDA 13 builds.
 
 Launcher notes:
@@ -178,21 +188,3 @@ Notes for AI agents:
 - read `install_manifest.json` before running the installer
 - do not assume CUDA is available just because NVIDIA hardware exists
 - after install, treat `post_install_check.py` as the source of truth for success/failure
-## Portable
-
-포터블 조립은 2단계다.
-
-1. 앱 트리와 런타임 폴더 구조 만들기
-2. 포터블 `.venv` 만들고 requirements 설치하기
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\ai_install\assemble_portable.ps1 `
-  -TargetDir C:\work\Multi-Play-Portable
-```
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\ai_install\setup_portable_env.ps1 `
-  -PortableRoot C:\work\Multi-Play-Portable
-```
-
-추가 런타임을 같이 복사하고 싶으면 `-FfmpegSource`, `-VlcSource`, `-LlamaSource`, `-GgufModels`, `-WhisperModelDirs`를 넘긴다.
