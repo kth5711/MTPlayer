@@ -8,9 +8,14 @@ $ErrorActionPreference = "Stop"
 
 $sourcePath = Join-Path $PSScriptRoot "MultiPlayLauncher.cs"
 $outputPath = Join-Path $ProjectRoot $OutputExe
+$defaultIconPath = Join-Path $PSScriptRoot "MultiPlay.ico"
 
 if (-not (Test-Path -LiteralPath $sourcePath)) {
   throw "Launcher source not found: $sourcePath"
+}
+
+if (-not $IconPath -and (Test-Path -LiteralPath $defaultIconPath)) {
+  $IconPath = $defaultIconPath
 }
 
 Add-Type -AssemblyName System.Windows.Forms
