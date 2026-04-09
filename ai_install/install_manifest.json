@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "project_name": "Multi-Play",
+  "target_os": "windows",
+  "recommended_env_name": "multi-play",
+  "python": {
+    "version": "3.11"
+  },
+  "ffmpeg_policy": {
+    "shared_path_required": true,
+    "preferred_paths": [
+      "C:\\ffmpeg\\bin\\ffmpeg.exe",
+      "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
+      "C:\\ProgramData\\chocolatey\\bin\\ffmpeg.exe",
+      "C:\\Tools\\ffmpeg\\bin\\ffmpeg.exe"
+    ],
+    "required_encoders": [
+      "libx264",
+      "aac"
+    ],
+    "recommended_hwaccels": [
+      "cuda",
+      "d3d11va",
+      "dxva2"
+    ],
+    "winget_ids": [
+      "Gyan.FFmpeg",
+      "FFmpeg.FFmpeg"
+    ]
+  },
+  "vlc_policy": {
+    "required": true,
+    "winget_ids": [
+      "VideoLAN.VLC"
+    ],
+    "common_paths": [
+      "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe",
+      "C:\\Program Files (x86)\\VideoLAN\\VLC\\vlc.exe"
+    ]
+  },
+  "pip_packages_core": [
+    "PyQt6",
+    "python-vlc",
+    "yt-dlp"
+  ],
+  "pip_packages_scene_analysis_core": [
+    "numpy",
+    "opencv-python",
+    "scenedetect",
+    "pillow"
+  ],
+  "pip_packages_scene_analysis_ai_common": [
+    "transformers",
+    "huggingface_hub",
+    "safetensors",
+    "accelerate",
+    "sentencepiece"
+  ],
+  "pip_packages_scene_analysis_ai_optional": [],
+  "scene_analysis_optional": {
+    "enabled_by_default": false,
+    "install_switch": "-InstallSceneAnalysis"
+  },
+  "torch": {
+    "gpu_index_url": "https://download.pytorch.org/whl/cu128",
+    "cpu_index_url": "https://download.pytorch.org/whl/cpu",
+    "packages": [
+      "torch"
+    ]
+  },
+  "validation_imports_core": [
+    "PyQt6",
+    "vlc",
+    "yt_dlp"
+  ],
+  "validation_imports_scene_analysis": [
+    "cv2",
+    "numpy",
+    "scenedetect",
+    "PIL",
+    "torch",
+    "transformers",
+    "huggingface_hub",
+    "safetensors",
+    "accelerate",
+    "sentencepiece"
+  ],
+  "validation_imports_scene_analysis_optional": [],
+  "project_checks": {
+    "must_import_main": true,
+    "check_ffmpeg_encoders": true,
+    "check_ffmpeg_hwaccels": true,
+    "check_torch_cuda": false
+  },
+  "notes": [
+    "Use one shared FFmpeg binary across scene detect, GIF, clip export, and preview paths.",
+    "YouTube/page URL playback expects yt-dlp so page URLs can be resolved into direct stream URLs.",
+    "Scene analysis is now an optional install pack. The base player should run without torch/transformers/scenedetect/opencv.",
+    "Similar-scene decode now defaults to TorchCodec first and OpenCV fallback for broad Windows/NVIDIA coverage.",
+    "CPU-only install is acceptable when no compatible GPU stack is present."
+  ]
+}
