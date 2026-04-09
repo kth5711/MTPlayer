@@ -4,6 +4,12 @@ import sys, os, multiprocessing
 from typing import List, Optional, Dict, Any
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(APP_DIR)
+for import_path in (APP_DIR, PROJECT_ROOT):
+    if import_path not in sys.path:
+        sys.path.insert(0, import_path)
+
 from app_shell.config import _default_config_path
 from canvas import Canvas  # canvas.py 임포트
 from canvas_support import DetachedTilesCompareOverlayController

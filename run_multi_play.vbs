@@ -5,7 +5,7 @@ Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
 scriptDir = fso.GetParentFolderName(WScript.ScriptFullName)
-mainPy = fso.BuildPath(scriptDir, "main.py")
+mainPy = fso.BuildPath(fso.BuildPath(scriptDir, "app"), "main.py")
 localVbs = fso.BuildPath(scriptDir, "run_multi_play_local.vbs")
 localBat = fso.BuildPath(scriptDir, "run_multi_play_local.bat")
 envPythonw = fso.BuildPath(fso.GetParentFolderName(scriptDir), "pythonw.exe")
@@ -15,7 +15,7 @@ condaRoot = fso.GetParentFolderName(fso.GetParentFolderName(envDir))
 condaBat = fso.BuildPath(fso.BuildPath(condaRoot, "condabin"), "conda.bat")
 
 If Not fso.FileExists(mainPy) Then
-  MsgBox "main.py not found:" & vbCrLf & mainPy, vbExclamation, "Multi-Play"
+  MsgBox "app\main.py not found:" & vbCrLf & mainPy, vbExclamation, "Multi-Play"
   WScript.Quit 1
 End If
 

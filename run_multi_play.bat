@@ -2,14 +2,14 @@
 setlocal
 
 set "SCRIPT_DIR=%~dp0"
-set "MAIN_PY=%SCRIPT_DIR%main.py"
+set "MAIN_PY=%SCRIPT_DIR%app\main.py"
 set "VBS_LAUNCHER=%SCRIPT_DIR%run_multi_play.vbs"
 set "LOCAL_LAUNCHER=%SCRIPT_DIR%run_multi_play_local.bat"
 set "ENV_PYTHON=%SCRIPT_DIR%..\python.exe"
 set "ENV_PYTHONW=%SCRIPT_DIR%..\pythonw.exe"
 
 if not exist "%MAIN_PY%" (
-  echo main.py not found:
+  echo app\main.py not found:
   echo   %MAIN_PY%
   pause
   exit /b 1

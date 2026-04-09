@@ -183,6 +183,8 @@ Notes on the 10~50 guide:
 Launcher notes:
 - install writes `run_multi_play_local.bat` in the project root using the resolved `conda` or `python` executable path
 - checked-in `run_multi_play.bat` now delegates to `run_multi_play_local.bat` first when that launcher exists
+- checked-in launchers target `app\main.py`, while keeping `run_multi_play.bat` and `run_multi_play.vbs` in the repo root as the Windows entrypoints
+- optional `MultiPlay.exe` can be built locally from `tools/windows_launcher/build_windows_launcher.ps1`
 
 Notes for AI agents:
 - read `install_manifest.json` before running the installer
