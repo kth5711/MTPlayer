@@ -2,7 +2,7 @@
 
 - AI-friendly Windows install bundle: `install/README.md`
 - Windows launchers stay in the repo root, and the thin app entry modules now live under `app/`.
-- Root Windows entrypoints are `run_multi_play.bat`, `run_multi_play.vbs`, and the optional `MultiPlay.exe` built from `tools/windows_launcher/build_windows_launcher.ps1`.
+- Root Windows entrypoints are `run_multi_play.bat` and `run_multi_play.vbs`.
 - `씬분석` 스택은 이제 옵션 설치다. 기본 플레이어만 쓰면 `install/install_windows.ps1` 기본 실행으로 충분하고, 필요한 경우에만 `-InstallSceneAnalysis`를 붙인다.
 - Open-source notice set:
   - [LICENSE](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/LICENSE)
