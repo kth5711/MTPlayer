@@ -6,9 +6,25 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from canvas import Canvas
 from canvas_support import DetachedTilesCompareOverlayController
 from .config import _default_config_path
-from i18n import SUPPORTED_UI_LANGUAGES, language_name, normalize_ui_language
+from i18n import SUPPORTED_UI_LANGUAGES, default_ui_language, language_name, normalize_ui_language
+from .interaction_ui_state import (
+    UI_VISIBILITY_ALWAYS,
+    UI_VISIBILITY_AUTO,
+    UI_VISIBILITY_HIDDEN,
+    WINDOWED_UI_AUTO_HIDE_MS,
+    WINDOWED_UI_AUTO_HIDE_OPTIONS_MS,
+)
 from .session import SessionManager
-from .theme import SUPPORTED_UI_THEMES, apply_ui_theme, normalize_ui_theme, remember_system_theme, theme_label_key
+from .theme import (
+    DEFAULT_LIGHT_THEME_BRIGHTNESS,
+    LIGHT_THEME_BRIGHTNESS_OPTIONS,
+    SUPPORTED_UI_THEMES,
+    apply_ui_theme,
+    normalize_light_theme_brightness,
+    normalize_ui_theme,
+    remember_system_theme,
+    theme_label_key,
+)
 import vlc
 
 
@@ -17,8 +33,11 @@ def initialize_main_window_core(main, config_path: Optional[str] = None) -> None
     main.session_manager = SessionManager(main.config_path)
     loaded_config = main.session_manager.load()
     main.config: Dict[str, Any] = dict(loaded_config) if isinstance(loaded_config, dict) else {}
-    main.ui_language = normalize_ui_language(main.config.get("language", "ko"))
+    main.ui_language = normalize_ui_language(main.config.get("language", default_ui_language()))
     main.ui_theme = normalize_ui_theme(main.config.get("theme", "black"))
+    main.light_theme_brightness = normalize_light_theme_brightness(
+        main.config.get("light_theme_brightness", DEFAULT_LIGHT_THEME_BRIGHTNESS)
+    )
     main.setWindowTitle("Multi-Play")
     main.resize(800, 800)
     main.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
@@ -43,7 +62,7 @@ def initialize_main_window_core(main, config_path: Optional[str] = None) -> None
     app = QtWidgets.QApplication.instance()
     if app is not None:
         remember_system_theme(app)
-        apply_ui_theme(app, main.ui_theme)
+        apply_ui_theme(app, main.ui_theme, main.light_theme_brightness)
 
     main.canvas = Canvas(main, vlc_instance=main.vlc_instance)
     main.central_mode_stack = QtWidgets.QStackedWidget(main)
@@ -83,7 +102,38 @@ def initialize_main_window_menus(main) -> None:
     main.border_action.setCheckable(True); main.border_action.setChecked(True)
     main.border_action.triggered.connect(main.toggle_borders)
 
-    main.compact_action = view_menu.addAction(main._tr("영상만 보기 모드"))
+    main.ui_visibility_menu = view_menu.addMenu(main._tr("UI 상태"))
+    main.ui_visibility_group = QtGui.QActionGroup(main)
+    main.ui_visibility_group.setExclusive(True)
+    main.ui_visibility_actions = {}
+    for mode, label in (
+        (UI_VISIBILITY_ALWAYS, "항상 표시"),
+        (UI_VISIBILITY_HIDDEN, "숨김"),
+        (UI_VISIBILITY_AUTO, "자동 숨김"),
+    ):
+        action = main.ui_visibility_menu.addAction(main._tr(label))
+        action.setCheckable(True)
+        action.setData(mode)
+        action.triggered.connect(lambda _checked=False, m=mode: main.set_ui_visibility_mode(m))
+        main.ui_visibility_group.addAction(action)
+        main.ui_visibility_actions[mode] = action
+    main.ui_visibility_menu.addSeparator()
+    main.ui_auto_hide_duration_menu = main.ui_visibility_menu.addMenu(main._tr("자동 숨김 시간"))
+    main.ui_auto_hide_duration_group = QtGui.QActionGroup(main)
+    main.ui_auto_hide_duration_group.setExclusive(True)
+    main.ui_auto_hide_duration_actions = {}
+    for duration_ms in WINDOWED_UI_AUTO_HIDE_OPTIONS_MS:
+        seconds = f"{duration_ms / 1000:.1f}".rstrip("0").rstrip(".")
+        action = main.ui_auto_hide_duration_menu.addAction(main._tr("{seconds}초", seconds=seconds))
+        action.setCheckable(True)
+        action.setData(int(duration_ms))
+        action.triggered.connect(
+            lambda _checked=False, duration=int(duration_ms): main.set_windowed_ui_auto_hide_ms(duration)
+        )
+        main.ui_auto_hide_duration_group.addAction(action)
+        main.ui_auto_hide_duration_actions[int(duration_ms)] = action
+
+    main.compact_action = QtGui.QAction(main._tr("영상만 보기 모드"), main)
     main.compact_action.setCheckable(True)
     main.compact_action.setChecked(False)
     main.compact_action.triggered.connect(main.toggle_compact_mode)
@@ -103,6 +153,10 @@ def initialize_main_window_menus(main) -> None:
     main.act_pause_roller = view_menu.addAction(main._tr("롤러 정지"))
     main.act_pause_roller.setCheckable(True); main.act_pause_roller.setChecked(False)
     main.act_pause_roller.toggled.connect(main.set_roller_paused)
+    main.act_reverse_roller = view_menu.addAction(main._tr("롤러 역방향"))
+    main.act_reverse_roller.setCheckable(True)
+    main.act_reverse_roller.setChecked(False)
+    main.act_reverse_roller.toggled.connect(main.set_roller_reversed)
     main.keep_detached_focus_mode_action = view_menu.addAction(main._tr("전체화면/스포트라이트 시 분리 유지"))
     main.keep_detached_focus_mode_action.setCheckable(True)
     main.keep_detached_focus_mode_action.setChecked(False)
@@ -139,6 +193,18 @@ def initialize_main_window_menus(main) -> None:
         action.triggered.connect(lambda _checked=False, c=code: main.set_ui_theme(c))
         main.theme_action_group.addAction(action)
         main.theme_actions[code] = action
+    main.theme_menu.addSeparator()
+    main.theme_brightness_menu = main.theme_menu.addMenu(main._tr("라이트 테마 밝기"))
+    main.theme_brightness_action_group = QtGui.QActionGroup(main)
+    main.theme_brightness_action_group.setExclusive(True)
+    main.theme_brightness_actions = {}
+    for percent in LIGHT_THEME_BRIGHTNESS_OPTIONS:
+        action = main.theme_brightness_menu.addAction(main._tr("{percent}%", percent=percent))
+        action.setCheckable(True)
+        action.setData(percent)
+        action.triggered.connect(lambda _checked=False, p=percent: main.set_light_theme_brightness(p))
+        main.theme_brightness_action_group.addAction(action)
+        main.theme_brightness_actions[percent] = action
 
     main.act_open.triggered.connect(lambda: main.open_multiple_videos(distribute=True))
     main.act_open_multi.triggered.connect(lambda: main.open_multiple_videos(distribute=False))
@@ -156,10 +222,27 @@ def _initialize_layout_mode_menu(main, view_menu) -> None:
     main.layout_mode_group = QtGui.QActionGroup(main)
     main.layout_mode_group.setExclusive(True)
     main.layout_mode_actions = {}
+    main.roller_axis_menus = {}
     main.roller_layout_menus = {}
     main.roller_layout_actions = {}
-    roller_modes = {Canvas.LAYOUT_ROLLER_ROW, Canvas.LAYOUT_ROLLER_COLUMN}
+    menu_modes = {
+        Canvas.LAYOUT_AUTO,
+        Canvas.LAYOUT_ROW,
+        Canvas.LAYOUT_COLUMN,
+        Canvas.LAYOUT_ROLLER_ROW,
+        Canvas.LAYOUT_ROLLER_COLUMN,
+        Canvas.LAYOUT_INFINITE_ROLLER_ROW,
+        Canvas.LAYOUT_INFINITE_ROLLER_COLUMN,
+    }
+    roller_modes = {
+        Canvas.LAYOUT_ROLLER_ROW,
+        Canvas.LAYOUT_ROLLER_COLUMN,
+        Canvas.LAYOUT_INFINITE_ROLLER_ROW,
+        Canvas.LAYOUT_INFINITE_ROLLER_COLUMN,
+    }
     for mode, label in Canvas.LAYOUT_LABELS.items():
+        if mode not in menu_modes:
+            continue
         if mode in roller_modes:
             continue
         action = main.layout_mode_menu.addAction(main._tr(label))
@@ -169,16 +252,19 @@ def _initialize_layout_mode_menu(main, view_menu) -> None:
         main.layout_mode_group.addAction(action)
         main.layout_mode_actions[mode] = action
     main.layout_mode_menu.addSeparator()
-    for mode in (Canvas.LAYOUT_ROLLER_ROW, Canvas.LAYOUT_ROLLER_COLUMN):
-        submenu = main.layout_mode_menu.addMenu(main._tr(Canvas.LAYOUT_LABELS[mode]))
-        main.roller_layout_menus[mode] = submenu
-        for count in Canvas.ROLLER_VISIBLE_COUNT_OPTIONS:
-            action = submenu.addAction(main._tr("{count}개", count=count))
-            action.setCheckable(True)
-            action.setData((mode, count))
-            action.triggered.connect(lambda _checked=False, m=mode, c=count: main.set_roller_layout_mode(m, c))
-            main.layout_mode_group.addAction(action)
-            main.roller_layout_actions[(mode, count)] = action
+    for axis, modes in Canvas._roller_axis_groups().items():
+        axis_menu = main.layout_mode_menu.addMenu(main._tr(Canvas.ROLLER_AXIS_LABELS[axis]))
+        main.roller_axis_menus[axis] = axis_menu
+        for mode in modes:
+            submenu = axis_menu.addMenu(main._tr(Canvas.LAYOUT_LABELS[mode]))
+            main.roller_layout_menus[mode] = submenu
+            for count in Canvas.ROLLER_VISIBLE_COUNT_OPTIONS:
+                action = submenu.addAction(main._tr("{count}개", count=count))
+                action.setCheckable(True)
+                action.setData((mode, count))
+                action.triggered.connect(lambda _checked=False, m=mode, c=count: main.set_roller_layout_mode(m, c))
+                main.layout_mode_group.addAction(action)
+                main.roller_layout_actions[(mode, count)] = action
 
 
 def _initialize_list_menu(main, bar) -> None:
@@ -241,17 +327,9 @@ def initialize_main_window_controls(main, bind_bookmark_context_menu) -> None:
     main.btn_opacity_mode_fullscreen.clicked.connect(main._toggle_active_opacity_mode_fullscreen)
     main.btn_opacity_mode_redock.clicked.connect(main._close_active_opacity_mode)
 
-    toolbar = main.addToolBar("Control")
-    main.control_toolbar = toolbar
-    btn_minus = QtWidgets.QPushButton("-")
-    btn_plus = QtWidgets.QPushButton("+")
-    btn_minus.clicked.connect(main.remove_last)
-    btn_plus.clicked.connect(main.add_video)
-    toolbar.addWidget(btn_minus)
-    toolbar.addWidget(btn_plus)
+    main.control_toolbar = None
 
     for key_text, handler in (
-        ("F11", main.toggle_fullscreen),
         ("Escape", main._handle_escape),
         ("Delete", main._remove_from_playlist),
         ("Shift+Delete", main._remove_and_trash_file),
@@ -286,6 +364,8 @@ def initialize_main_window_runtime(main) -> None:
     main.master_muted = False
     main._fullscreen_ui_mode = None
     main._fullscreen_ui_tile = None
+    main._windowed_ui_mode = "all"
+    main._windowed_ui_tile = None
     main._fullscreen_hover_pending_pos = None
     main._fullscreen_hover_timer = QtCore.QTimer(main)
     main._fullscreen_hover_timer.setSingleShot(True)
@@ -302,6 +382,10 @@ def initialize_main_window_post_restore(main) -> None:
     main.cursor_hide_timer.setSingleShot(True)
     main.cursor_hide_timer.setInterval(1500)
     main.cursor_hide_timer.timeout.connect(main._hide_cursor)
+    main._windowed_ui_hide_timer = QtCore.QTimer(main)
+    main._windowed_ui_hide_timer.setSingleShot(True)
+    main._windowed_ui_hide_timer.setInterval(main.current_windowed_ui_auto_hide_ms())
+    main._windowed_ui_hide_timer.timeout.connect(main._hide_windowed_ui_for_auto)
     QtWidgets.QApplication.instance().installEventFilter(main)
 
     main.auto_save_timer = QtCore.QTimer(main)
@@ -309,3 +393,4 @@ def initialize_main_window_post_restore(main) -> None:
     main.auto_save_timer.timeout.connect(lambda: main.save_config(auto=True))
     main.auto_save_timer.start()
     print("Settings auto-save timer started (light checkpoint mode).")
+    main._sync_windowed_ui_from_compact_mode()

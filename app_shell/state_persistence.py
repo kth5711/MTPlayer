@@ -5,14 +5,23 @@ from typing import Any, Dict, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from i18n import normalize_ui_language, tr
-from .theme import normalize_ui_theme
+from i18n import default_ui_language, normalize_ui_language, tr
+from .interaction_ui_state import compat_ui_visibility_mode_from_payload
+from .theme import DEFAULT_LIGHT_THEME_BRIGHTNESS, normalize_light_theme_brightness, normalize_ui_theme
 
 
 def load_config_and_restore(main):
     main.config = main.session_manager.load()
-    main.ui_language = normalize_ui_language(main.config.get("language", getattr(main, "ui_language", "ko")))
+    main.ui_language = normalize_ui_language(
+        main.config.get("language", getattr(main, "ui_language", default_ui_language()))
+    )
     main.ui_theme = normalize_ui_theme(main.config.get("theme", getattr(main, "ui_theme", "black")))
+    main.light_theme_brightness = normalize_light_theme_brightness(
+        main.config.get(
+            "light_theme_brightness",
+            getattr(main, "light_theme_brightness", DEFAULT_LIGHT_THEME_BRIGHTNESS),
+        )
+    )
     main.vlc_hw_decode_enabled = bool(main.config.get("vlc_hw_decode", False))
     main.last_dir = main.config.get("last_dir", "")
     main._apply_view_state(_restored_view_state(main))
@@ -33,14 +42,21 @@ def load_config_and_restore(main):
 
 
 def _restored_view_state(main) -> Dict[str, Any]:
+    ui_visibility_mode = compat_ui_visibility_mode_from_payload(
+        main.config,
+        fallback=main.current_ui_visibility_mode(),
+    )
     return {
         "master_volume": int(main.config.get("master_volume", 100)),
         "border_visible": bool(main.config.get("border_visible", True)),
-        "compact_mode": bool(main.config.get("compact_mode", False)),
+        "ui_visibility_mode": ui_visibility_mode,
+        "ui_auto_hide_ms": main.config.get("ui_auto_hide_ms", main.current_windowed_ui_auto_hide_ms()),
+        "compact_mode": ui_visibility_mode == "hidden",
         "always_on_top": bool(main.config.get("always_on_top", False)),
         "layout_mode": main.config.get("layout_mode", main.canvas.layout_mode()),
         "roller_visible_count": main.config.get("roller_visible_count", main.canvas.roller_visible_count()),
         "roller_speed": main.config.get("roller_speed", main.canvas.roller_speed_px_per_sec()),
+        "roller_direction": main.config.get("roller_direction", main.canvas.roller_direction()),
         "roller_paused": bool(main.config.get("roller_paused", False)),
         "overlay_global_apply_percent": main.config.get(
             "overlay_global_apply_percent",
@@ -89,14 +105,26 @@ def _light_config_payload(main) -> Dict[str, Any]:
         "shortcuts": main.config.get("shortcuts", main.current_shortcuts_or_defaults()),
         "restore_last_session": bool(main.config.get("restore_last_session", False)),
         "active_profile_path": _active_profile_path(main),
-        "language": normalize_ui_language(getattr(main, "ui_language", main.config.get("language", "ko"))),
+        "language": normalize_ui_language(
+            getattr(main, "ui_language", main.config.get("language", default_ui_language()))
+        ),
         "theme": normalize_ui_theme(getattr(main, "ui_theme", main.config.get("theme", "black"))),
+        "light_theme_brightness": normalize_light_theme_brightness(
+            getattr(
+                main,
+                "light_theme_brightness",
+                main.config.get("light_theme_brightness", DEFAULT_LIGHT_THEME_BRIGHTNESS),
+            )
+        ),
         "border_visible": bool(main.border_action.isChecked()),
-        "compact_mode": bool(main.compact_action.isChecked()),
+        "ui_visibility_mode": main.current_ui_visibility_mode(),
+        "ui_auto_hide_ms": main.current_windowed_ui_auto_hide_ms(),
+        "compact_mode": main.current_ui_visibility_mode() == "hidden",
         "always_on_top": main.always_on_top_action.isChecked(),
         "layout_mode": main.canvas.layout_mode(),
         "roller_visible_count": main.canvas.roller_visible_count(),
         "roller_speed": main.canvas.roller_speed_px_per_sec(),
+        "roller_direction": main.canvas.roller_direction(),
         "roller_paused": main.canvas.roller_paused(),
         "overlay_global_apply_percent": main.canvas.overlay_global_apply_percent(),
         "keep_detached_focus_mode": bool(
@@ -238,7 +266,7 @@ def _minimal_profile_payload(main) -> Dict[str, Any]:
     return {
         "profile_type": "multi_play_profile",
         "version": 1,
-        "language": normalize_ui_language(getattr(main, "ui_language", "ko")),
+        "language": normalize_ui_language(getattr(main, "ui_language", default_ui_language())),
         "bookmark_categories": [],
         "bookmarks": [],
     }
@@ -296,7 +324,9 @@ def _sync_bookmarks_to_active_profile(main) -> None:
         payload = _minimal_profile_payload(main)
     payload["profile_type"] = "multi_play_profile"
     payload["version"] = int(payload.get("version", 1) or 1)
-    payload["language"] = normalize_ui_language(getattr(main, "ui_language", payload.get("language", "ko")))
+    payload["language"] = normalize_ui_language(
+        getattr(main, "ui_language", payload.get("language", default_ui_language()))
+    )
     payload["bookmark_categories"] = main._bookmark_categories_payload()
     payload["bookmarks"] = main._bookmark_payload()
     main.session_manager.save(payload, path=path)

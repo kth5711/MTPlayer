@@ -2,18 +2,23 @@ import os
 
 from PyQt6 import QtWidgets
 
-from .export_common import _current_existing_media_path, _tile_status_message
+from .export_common import _current_existing_media_path, _tile_status_message, guard_joined_export_path
 from .support import is_image_file_path
 
 
 def _screenshot_output_path(tile, path: str) -> str:
     base_dir = os.path.dirname(path)
     base_name, _ = os.path.splitext(os.path.basename(path))
-    save_dir = os.path.join(base_dir, f"{base_name}_screenshots")
-    os.makedirs(save_dir, exist_ok=True)
     cur_ms = max(0, int(tile.mediaplayer.get_time() or 0))
     t_str = tile._ms_to_hms(cur_ms).replace(":", "-")
-    return os.path.join(save_dir, f"{base_name}_{t_str}_{cur_ms:08d}.png")
+    out_path = guard_joined_export_path(
+        base_dir,
+        [f"{base_name}_screenshots", f"{base_name}_{t_str}_{cur_ms:08d}.png"],
+        fallback_prefix="snapshot",
+    )
+    save_dir = os.path.dirname(out_path)
+    os.makedirs(save_dir, exist_ok=True)
+    return out_path
 
 
 def _save_image_screenshot(tile, out_path: str) -> bool:
@@ -70,11 +75,19 @@ def capture_screenshot(tile):
 def _frameset_output_dir(tile, path: str, duration_sec: int) -> tuple[str, str]:
     base_dir = os.path.dirname(path)
     base_name, _ = os.path.splitext(os.path.basename(path))
-    save_root = os.path.join(base_dir, f"{base_name}_framesets")
+    save_root = guard_joined_export_path(
+        base_dir,
+        [f"{base_name}_framesets"],
+        fallback_prefix="frameset",
+    )
     os.makedirs(save_root, exist_ok=True)
     cur_ms = max(0, int(tile.mediaplayer.get_time() or 0))
     stamp = tile._ms_to_hms(cur_ms).replace(":", "-")
-    out_dir = os.path.join(save_root, f"{base_name}_{stamp}_{cur_ms:08d}_{duration_sec:02d}s")
+    out_dir = guard_joined_export_path(
+        save_root,
+        [f"{base_name}_{stamp}_{cur_ms:08d}_{duration_sec:02d}s"],
+        fallback_prefix="frameset",
+    )
     os.makedirs(out_dir, exist_ok=True)
     return base_name, out_dir
 

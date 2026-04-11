@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from PyQt6 import QtCore
 
 from .ui_text_catalog_main import EN_UI_TEXT_MAIN
 from .ui_text_catalog_main_ja import JA_UI_TEXT_MAIN
@@ -44,8 +45,18 @@ TRANSLATION_TABLES = {
 }
 
 
+def default_ui_language() -> str:
+    try:
+        locale_name = str(QtCore.QLocale.system().name() or "")
+    except Exception:
+        locale_name = ""
+    return normalize_ui_language(locale_name)
+
+
 def normalize_ui_language(value: Any) -> str:
     text = str(value or "").strip().lower()
+    if text.startswith("ko") or "한국" in str(value or ""):
+        return "ko"
     if text.startswith("ja") or text.startswith("jp") or "日本" in str(value or ""):
         return "ja"
     if (
@@ -58,11 +69,11 @@ def normalize_ui_language(value: Any) -> str:
         return "zh"
     if text.startswith("en"):
         return "en"
-    return "ko"
+    return "en"
 
 
 def language_name(code: str) -> str:
-    return LANGUAGE_NAMES.get(normalize_ui_language(code), "한국어")
+    return LANGUAGE_NAMES.get(normalize_ui_language(code), "English")
 
 
 def _push_owner_candidate(stack: list[Any], current: Any, name: str):
@@ -97,11 +108,11 @@ def _owner_candidates(owner: Any):
 def ui_language(owner: Any) -> str:
     for candidate in _owner_candidates(owner):
         if hasattr(candidate, "ui_language"):
-            return normalize_ui_language(getattr(candidate, "ui_language", "ko"))
+            return normalize_ui_language(getattr(candidate, "ui_language", default_ui_language()))
         config = getattr(candidate, "config", None)
         if isinstance(config, dict) and "language" in config:
             return normalize_ui_language(config.get("language"))
-    return "ko"
+    return default_ui_language()
 
 
 def tr(owner: Any, text: str, **kwargs: Any) -> str:

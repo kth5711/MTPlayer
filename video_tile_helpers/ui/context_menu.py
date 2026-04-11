@@ -1,4 +1,6 @@
-from PyQt6 import QtCore, QtGui, QtWidgets
+import os
+
+from PyQt6 import QtCore, QtWidgets
 
 from i18n import tr
 from .context_menu_media import add_export_actions, add_repeat_mode_menu, add_track_menus
@@ -112,32 +114,39 @@ def _overlay_layer_dialog_label(tile) -> str:
     return tr(tile, "레이어 투명도 조절... ({count}개)", count=len(tile._overlay_group_tiles()))
 
 
-def _zoom_menu_label(tile) -> str:
-    try:
-        current = int(getattr(tile, "zoom_percent", 100) or 100)
-    except Exception:
-        current = 100
-    return tr(tile, "확대: {percent}%", percent=current)
-
-
 def _add_compare_sync_menu(tile, menu):
     submenu = menu.addMenu(tr(tile, "비교/동기화"))
     submenu.addAction(tr(tile, "타임코드 이동..."), tile._jump_to_timecode_from_context)
     submenu.addAction(tr(tile, "이 타일 기준 전체 동기화"), tile._sync_other_tiles_to_this_timecode)
-    submenu.addAction(tr(tile, "포커스 검토 창"), tile._open_focus_review_from_context)
+    submenu.addAction(tr(tile, "이 타일 기준 진행률 동기화 (%)"), tile._sync_other_tiles_to_this_progress)
 
 
-def _add_zoom_menu(tile, menu):
-    submenu = menu.addMenu(_zoom_menu_label(tile))
-    group = QtGui.QActionGroup(submenu)
-    group.setExclusive(True)
-    current = int(getattr(tile, "zoom_percent", 100) or 100)
-    for percent in getattr(tile, "ZOOM_PERCENTS", (100, 125, 150, 200)):
-        action = submenu.addAction(f"{int(percent)}%")
-        action.setCheckable(True)
-        action.setChecked(int(percent) == current)
-        action.triggered.connect(lambda _checked=False, p=int(percent): tile.set_zoom_percent(p))
-        group.addAction(action)
+def _add_current_file_path_actions(tile, menu) -> None:
+    try:
+        current_path = str(tile._current_media_path() or "").strip()
+    except Exception:
+        current_path = ""
+    if not current_path or not os.path.isfile(current_path):
+        return
+    menu.addAction(tr(tile, "파일 이름 바꾸기..."), tile._rename_current_media_from_context)
+    menu.addAction(tr(tile, "파일 경로 바꾸기..."), tile._move_current_media_from_context)
+
+
+def _add_remove_tile_action(tile, menu, canvas) -> None:
+    if canvas is None:
+        return
+    try:
+        detached = bool(canvas.is_detached(tile))
+    except Exception:
+        detached = False
+    label = tr(tile, "이 개별창 제거") if detached else tr(tile, "이 타일 제거")
+    menu.addAction(label, lambda: canvas.remove_tile(tile))
+
+
+def _add_create_tile_action(tile, menu, canvas) -> None:
+    if canvas is None:
+        return
+    menu.addAction(tr(tile, "타일 생성"), canvas.add_tile)
 
 
 def _add_overlay_audio_mode_menu(tile, overlay_menu):
@@ -203,15 +212,18 @@ def show_tile_context_menu(tile, global_pos: QtCore.QPoint):
     if getattr(menu_parent, "overlay_active", lambda: False)() or bool(getattr(menu_parent, "_always_on_top", False)): menu.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, True)
     tile._active_context_menu = menu
     menu.aboutToHide.connect(lambda m=menu: tile._finalize_tile_context_menu(m))
+    canvas = tile._canvas_host()
     menu.addAction(tr(tile, "파일 추가"), tile._add_files); menu.addAction(tr(tile, "폴더 추가"), tile._add_folder)
     menu.addAction(tr(tile, "URL/스트림 열기..."), tile._open_url_stream_from_context); menu.addAction(tr(tile, "북마크 추가"), tile._add_bookmark)
+    _add_current_file_path_actions(tile, menu)
     menu.addSeparator()
     _add_compare_sync_menu(tile, menu)
+    menu.addAction(tr(tile, "포커스 검토 창"), tile._open_focus_review_from_context)
+    _add_create_tile_action(tile, menu, canvas)
+    _add_remove_tile_action(tile, menu, canvas)
     menu.addSeparator()
     add_repeat_mode_menu(tile, menu); add_display_mode_menu(tile, menu)
     add_transform_mode_menu(tile, menu)
-    _add_zoom_menu(tile, menu)
-    canvas = tile._canvas_host()
     if canvas is not None:
         menu.addSeparator()
         _add_overlay_menu(tile, menu, canvas)

@@ -16,6 +16,13 @@ def _tile_export_busy_changed(tile, busy: bool) -> None:
                 btn.setEnabled(not bool(busy))
             except Exception:
                 pass
+    for name in ("action_export_gif", "action_export_clip"):
+        action = getattr(tile, name, None)
+        if action is not None:
+            try:
+                action.setEnabled(not bool(busy))
+            except Exception:
+                pass
 
 
 def _tile_job_meta(tile) -> dict:

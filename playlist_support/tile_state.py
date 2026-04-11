@@ -1,6 +1,7 @@
 from typing import Optional
 
 from PyQt6 import QtGui, QtWidgets
+from app_shell.theme import current_app_light_theme_brightness, light_theme_adjust_color
 
 
 def adjust_tile_current_index_after_row_removal(main, tile, removed_rows: list[int], was_playing_override: Optional[bool] = None):
@@ -135,13 +136,14 @@ def _playlist_current_item_colors(main, is_playing: bool) -> tuple[QtGui.QColor,
         if is_playing:
             return QtGui.QColor(32, 78, 126), QtGui.QColor(246, 249, 252)
         return QtGui.QColor(56, 64, 78), QtGui.QColor(230, 236, 244)
+    brightness = current_app_light_theme_brightness()
     if _playlist_theme(main) == "system":
         bg = QtGui.QColor(214, 232, 255) if is_playing else QtGui.QColor(236, 241, 247)
         fg = QtGui.QColor(12, 24, 39) if is_playing else QtGui.QColor(37, 49, 63)
-        return bg, fg
+        return light_theme_adjust_color(bg, brightness), fg
     if is_playing:
-        return QtGui.QColor(210, 229, 255), QtGui.QColor(14, 27, 43)
-    return QtGui.QColor(233, 239, 247), QtGui.QColor(40, 51, 66)
+        return light_theme_adjust_color(QtGui.QColor(210, 229, 255), brightness), QtGui.QColor(14, 27, 43)
+    return light_theme_adjust_color(QtGui.QColor(233, 239, 247), brightness), QtGui.QColor(40, 51, 66)
 
 
 def _playlist_tile_header_colors(main, is_playing: bool) -> tuple[QtGui.QColor, QtGui.QColor]:
@@ -149,13 +151,14 @@ def _playlist_tile_header_colors(main, is_playing: bool) -> tuple[QtGui.QColor, 
         if is_playing:
             return QtGui.QColor(23, 50, 79), QtGui.QColor(213, 226, 241)
         return QtGui.QColor(34, 40, 50), QtGui.QColor(177, 189, 204)
+    brightness = current_app_light_theme_brightness()
     if _playlist_theme(main) == "system":
         bg = QtGui.QColor(230, 239, 250) if is_playing else QtGui.QColor(243, 246, 250)
         fg = QtGui.QColor(24, 40, 58) if is_playing else QtGui.QColor(68, 81, 96)
-        return bg, fg
+        return light_theme_adjust_color(bg, brightness), fg
     if is_playing:
-        return QtGui.QColor(226, 236, 249), QtGui.QColor(24, 40, 58)
-    return QtGui.QColor(242, 245, 249), QtGui.QColor(79, 91, 106)
+        return light_theme_adjust_color(QtGui.QColor(226, 236, 249), brightness), QtGui.QColor(24, 40, 58)
+    return light_theme_adjust_color(QtGui.QColor(242, 245, 249), brightness), QtGui.QColor(79, 91, 106)
 
 
 def _apply_item_brushes(item, bg: QtGui.QColor, fg: QtGui.QColor, columns: tuple[int, ...] = (0, 1)) -> None:

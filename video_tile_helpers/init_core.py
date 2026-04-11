@@ -57,8 +57,14 @@ def _init_frame_state(tile: "VideoTile"):
     tile.setLineWidth(1)
     tile.is_selected = False
     tile.selection_mode = "off"
+    tile._border_visible = True
+    tile._ui_chrome_visible = True
+    tile._selection_badge_visible = False
+    tile._border_frame = None
+    tile._selection_badge_hide_timer = QtCore.QTimer(tile)
+    tile._selection_badge_hide_timer.setSingleShot(True)
     tile.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-    tile.setStyleSheet("border: 1px solid black;")
+    tile.setStyleSheet("border: none;")
     tile.setAcceptDrops(True)
     tile.setMinimumSize(0, 0)
     tile.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
@@ -78,6 +84,7 @@ def _init_frame_state(tile: "VideoTile"):
     tile._url_download_worker = None
     tile._active_context_menu = None
     tile.add_button = None
+    tile.add_hint_label = None
 
 
 def _init_playback_state(tile: "VideoTile"):
@@ -86,13 +93,13 @@ def _init_playback_state(tile: "VideoTile"):
     tile._playlist_entry_bookmarks = {}
     tile._playlist_bookmark_end_ms = None
     tile._playlist_bookmark_guard_active = False
+    tile._playlist_bookmark_auto_advance = False
     tile.posA = None
     tile.posB = None
     tile.loop_enabled = False
     tile.repeat_mode = "off"
     tile.external_subtitles = {}
     tile.playback_rate = 1.0
-    tile.zoom_percent = 100
     tile.transform_mode = "none"
     tile._last_set_media_error = ""
     tile.mediaplayer = None
@@ -107,6 +114,9 @@ def _init_video_surface(tile: "VideoTile"):
     tile._current_media_kind = "none"
     tile._image_source_pixmap = QtGui.QPixmap()
     tile._image_movie = None
+    # Do not place a sibling overlay over the VLC native surface. Transparent Qt widgets
+    # can still occlude the video output on Windows.
+    tile._border_frame = None
 
 
 def _init_image_widgets(tile: "VideoTile"):
@@ -138,12 +148,7 @@ def _init_feedback_overlays(tile: "VideoTile"):
         "_mute_overlay_timer",
     )
     tile._mute_overlay_timer.timeout.connect(mute_overlay.hide)
-    volume_overlay = _configure_center_overlay(
-        tile,
-        "volume_overlay",
-        "",
-        "_volume_overlay_timer",
-    )
+    volume_overlay = _configure_volume_overlay(tile)
     tile._volume_overlay_timer.timeout.connect(volume_overlay.hide)
     _configure_center_overlay(
         tile,
@@ -189,11 +194,43 @@ def _configure_center_overlay(
     return overlay
 
 
+def _configure_volume_overlay(tile: "VideoTile"):
+    overlay = QtWidgets.QWidget(tile)
+    overlay.setVisible(False)
+    overlay.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+    overlay.setObjectName("tile_volume_overlay")
+    layout = QtWidgets.QVBoxLayout(overlay)
+    layout.setContentsMargins(8, 6, 8, 6)
+    layout.setSpacing(4)
+    label = QtWidgets.QLabel("100%", overlay)
+    label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+    slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, overlay)
+    slider.setRange(0, 120)
+    slider.setValue(100)
+    slider.setEnabled(False)
+    slider.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+    slider.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+    slider.setFixedWidth(120)
+    layout.addWidget(label)
+    layout.addWidget(slider)
+    tile.volume_overlay = overlay
+    tile.volume_overlay_label = label
+    tile.volume_overlay_slider = slider
+    timer = QtCore.QTimer(tile)
+    timer.setSingleShot(True)
+    tile._volume_overlay_timer = timer
+    return overlay
+
+
 def _init_tile_audio_display_state(tile: "VideoTile"):
     tile.tile_volume = getattr(tile, "tile_volume", 120)
     tile.tile_muted = getattr(tile, "tile_muted", False)
     tile.display_mode = getattr(tile, "display_mode", "fit")
     tile.transform_mode = getattr(tile, "transform_mode", "none")
+    tile._volume_button_pressing = False
+    tile._volume_button_drag_active = False
+    tile._volume_button_press_global_x = 0.0
+    tile._volume_button_drag_start_volume = int(getattr(tile, "tile_volume", 120))
 
 
 def _feedback_overlay_theme_is_dark(tile: "VideoTile") -> bool:
@@ -223,19 +260,25 @@ def refresh_feedback_overlay_styles(tile: "VideoTile") -> None:
     text_styles = (
         {
             "mute_overlay": "font-size: 42px; color: rgba(255,255,255,218); background: transparent; padding: 0;",
-            "volume_overlay": "font-size: 11px; font-weight: 700; color: rgba(248,248,248,232); background: transparent; padding: 0;",
             "seek_overlay": "font-size: 12px; font-weight: 700; color: rgba(255,255,255,236); background: transparent; padding: 0;",
             "rate_overlay": "font-size: 12px; font-weight: 700; color: rgba(255,255,255,236); background: transparent; padding: 0;",
-            "status_overlay": "font-size: 13px; font-weight: 700; color: rgba(255,255,255,240); background: transparent; padding: 0;",
+            "status_overlay": (
+                "font-size: 12px; font-weight: 700; color: rgba(255,255,255,242);"
+                "background: rgba(18,22,28,196); border: 1px solid rgba(255,255,255,34);"
+                "border-radius: 10px; padding: 3px 8px;"
+            ),
         }
         if dark_theme
         else
         {
             "mute_overlay": "font-size: 42px; color: rgba(29,40,52,228); background: transparent; padding: 0;",
-            "volume_overlay": "font-size: 11px; font-weight: 700; color: rgba(33,45,58,234); background: transparent; padding: 0;",
             "seek_overlay": "font-size: 12px; font-weight: 700; color: rgba(31,42,55,236); background: transparent; padding: 0;",
             "rate_overlay": "font-size: 12px; font-weight: 700; color: rgba(31,42,55,236); background: transparent; padding: 0;",
-            "status_overlay": "font-size: 13px; font-weight: 700; color: rgba(27,38,50,238); background: transparent; padding: 0;",
+            "status_overlay": (
+                "font-size: 12px; font-weight: 700; color: rgba(27,38,50,240);"
+                "background: rgba(255,255,255,228); border: 1px solid rgba(90,108,126,58);"
+                "border-radius: 10px; padding: 3px 8px;"
+            ),
         }
     )
     shadow_color = QtGui.QColor(0, 0, 0, 186) if dark_theme else QtGui.QColor(255, 255, 255, 212)
@@ -253,3 +296,39 @@ def refresh_feedback_overlay_styles(tile: "VideoTile") -> None:
         shadow.setBlurRadius(shadow_blur)
         shadow.setOffset(shadow_offset)
         shadow.setColor(shadow_color)
+    volume_overlay = getattr(tile, "volume_overlay", None)
+    volume_label = getattr(tile, "volume_overlay_label", None)
+    volume_slider = getattr(tile, "volume_overlay_slider", None)
+    if volume_overlay is not None and volume_label is not None and volume_slider is not None:
+        if dark_theme:
+            volume_overlay.setStyleSheet(
+                "QWidget#tile_volume_overlay {"
+                "background: rgba(18,22,28,208); border: 1px solid rgba(255,255,255,34);"
+                "border-radius: 10px; }"
+            )
+            volume_label.setStyleSheet(
+                "font-size: 11px; font-weight: 700; color: rgba(248,248,248,232); background: transparent;"
+            )
+            volume_slider.setStyleSheet(
+                "QSlider::groove:horizontal { height: 4px; background: rgba(255,255,255,54); border-radius: 2px; }"
+                "QSlider::sub-page:horizontal { background: rgba(92,182,255,210); border-radius: 2px; }"
+                "QSlider::add-page:horizontal { background: rgba(255,255,255,20); border-radius: 2px; }"
+                "QSlider::handle:horizontal { width: 10px; margin: -4px 0; border-radius: 5px;"
+                "background: rgba(255,255,255,228); border: 1px solid rgba(0,0,0,80); }"
+            )
+        else:
+            volume_overlay.setStyleSheet(
+                "QWidget#tile_volume_overlay {"
+                "background: rgba(255,255,255,232); border: 1px solid rgba(90,108,126,58);"
+                "border-radius: 10px; }"
+            )
+            volume_label.setStyleSheet(
+                "font-size: 11px; font-weight: 700; color: rgba(33,45,58,234); background: transparent;"
+            )
+            volume_slider.setStyleSheet(
+                "QSlider::groove:horizontal { height: 4px; background: rgba(60,76,94,48); border-radius: 2px; }"
+                "QSlider::sub-page:horizontal { background: rgba(56,130,246,210); border-radius: 2px; }"
+                "QSlider::add-page:horizontal { background: rgba(60,76,94,18); border-radius: 2px; }"
+                "QSlider::handle:horizontal { width: 10px; margin: -4px 0; border-radius: 5px;"
+                "background: rgba(255,255,255,244); border: 1px solid rgba(81,97,115,86); }"
+            )

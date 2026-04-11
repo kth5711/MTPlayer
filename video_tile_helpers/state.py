@@ -19,7 +19,6 @@ def to_state(tile: "VideoTile") -> Dict[str, Any]:
         "volume": tile.sld_vol.value(),
         "rate": tile.playback_rate,
         "display_mode": getattr(tile, "display_mode", "fit"),
-        "zoom_percent": int(getattr(tile, "zoom_percent", 100) or 100),
         "transform_mode": getattr(tile, "transform_mode", "none"),
         "subtitles": dict(tile.external_subtitles),
         "repeat": _repeat_state(tile),
@@ -151,7 +150,6 @@ def _restore_volume_and_display_state(tile: "VideoTile", state):
     tile.lbl_rate.setText(tr(tile, "배속: {rate:.1f}x", rate=tile.playback_rate))
     tile.set_display_mode(str(state.get("display_mode", "fit")))
     tile.set_transform_mode(str(state.get("transform_mode", "none")))
-    tile.set_zoom_percent(int(state.get("zoom_percent", 100)))
 
 
 def _restore_subtitles(tile: "VideoTile", subtitles: Any):

@@ -42,7 +42,11 @@ from video_tile_helpers.playlist import (
     prepend_files_to_playlist_and_play as prepend_files_to_playlist_and_play_impl,
     set_external_subtitle_for_path as set_external_subtitle_for_path_impl,
 )
-from video_tile_helpers.selection import set_selection as set_selection_impl
+from video_tile_helpers.selection import (
+    refresh_border_frame as refresh_border_frame_impl,
+    refresh_selection_visuals as refresh_selection_visuals_impl,
+    set_selection as set_selection_impl,
+)
 from video_tile_helpers.player import (
     apply_display_mode as apply_display_mode_impl,
     apply_media_hw_options as apply_media_hw_options_impl,
@@ -64,7 +68,6 @@ from video_tile_helpers.player import (
     set_media as set_media_impl,
     set_subtitle_track as set_subtitle_track_impl,
     set_transform_mode as set_transform_mode_impl,
-    set_zoom_percent as set_zoom_percent_impl,
     should_use_hw_accel as should_use_hw_accel_impl,
     stop as stop_impl,
     toggle_play as toggle_play_impl,
@@ -150,9 +153,12 @@ from video_tile_helpers.context_actions import (
     dialog_start_dir as dialog_start_dir_impl,
     fit_media_size_from_context as fit_media_size_from_context_impl,
     jump_to_timecode_from_context as jump_to_timecode_from_context_impl,
+    move_current_media_from_context as move_current_media_from_context_impl,
     open_focus_review_from_context as open_focus_review_from_context_impl,
     open_url_stream_from_context as open_url_stream_from_context_impl,
+    rename_current_media_from_context as rename_current_media_from_context_impl,
     remember_dialog_dir as remember_dialog_dir_impl,
+    sync_other_tiles_to_this_progress as sync_other_tiles_to_this_progress_impl,
     sync_other_tiles_to_this_timecode as sync_other_tiles_to_this_timecode_impl,
     trigger_mute_selected_tiles as trigger_mute_selected_tiles_impl,
 )
@@ -199,7 +205,6 @@ class VideoTile(QtWidgets.QFrame):
     DISPLAY_MODES = ("fit", "crop", "stretch", "original")
     TRANSFORM_MODES = ("none", "hflip", "vflip", "180", "90", "270", "transpose", "antitranspose")
     ROTATION_TOGGLE_MODES = ("none", "90", "180", "270")
-    ZOOM_PERCENTS = (100, 125, 150, 200)
     DISPLAY_MODE_LABELS = {
         "fit": "최적화",
         "crop": "채우기",
@@ -241,6 +246,48 @@ class VideoTile(QtWidgets.QFrame):
     def _refresh_ui_texts(self):
         refresh_video_tile_ui_texts_impl(self)
         self._refresh_add_button_style()
+        self._refresh_add_hint_style()
+
+    def _fit_open_title_hitbox(self):
+        label = getattr(self, "title", None)
+        if label is None:
+            return
+        text = label.text() or ""
+        width = max(30, label.fontMetrics().horizontalAdvance(text) + 8)
+        label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+        label.setFixedWidth(width)
+
+    def _restore_media_title_hitbox(self):
+        label = getattr(self, "title", None)
+        if label is None:
+            return
+        label.setMinimumWidth(30)
+        label.setMaximumWidth(100)
+        label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Fixed)
+
+    def _fit_ab_loop_button_hitbox(self):
+        button = getattr(self, "btn_A", None)
+        if button is None:
+            return
+        text = button.text() or ""
+        width = max(22, button.fontMetrics().horizontalAdvance(text) + 12)
+        button.setFixedSize(width, 24)
+
+    def _fit_time_label_hitbox(self):
+        label = getattr(self, "lbl_time", None)
+        if label is None:
+            return
+        sample = max((label.text() or "00:00 / 00:00", "00:00 / 00:00"), key=len)
+        width = max(76, label.fontMetrics().horizontalAdvance(sample) + 8)
+        label.setSizePolicy(QtWidgets.QSizePolicy.Policy.Fixed, QtWidgets.QSizePolicy.Policy.Fixed)
+        label.setFixedWidth(width)
+
+    def _set_time_label_text(self, text: str):
+        label = getattr(self, "lbl_time", None)
+        if label is None:
+            return
+        label.setText(text)
+        self._fit_time_label_hitbox()
 
     def eventFilter(self, obj, event):
         handled = event_filter_impl(self, obj, event)
@@ -317,29 +364,30 @@ class VideoTile(QtWidgets.QFrame):
         button.setAutoDefault(False)
         button.setDefault(False)
         button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-        button.setFixedSize(56, 56)
+        button.setFixedSize(72, 72)
         theme = self._add_button_theme()
         if theme == "white":
             button.setStyleSheet(
                 """
                 QPushButton#EmptyTileAddButton {
-                    font-size: 28px;
-                    font-weight: 500;
+                    font-size: 54px;
+                    font-weight: 600;
                     color: #415362;
-                    background: rgba(255, 255, 255, 210);
-                    border: 1px solid #C9D4DF;
-                    border-radius: 28px;
-                    padding: 0 0 3px 0;
+                    background: transparent;
+                    border: none;
+                    padding: 0 0 0 6px;
                 }
                 QPushButton#EmptyTileAddButton:hover {
                     color: #1C2731;
-                    background: #EEF3F7;
-                    border: 1px solid #9FB2C5;
+                    background: rgba(228, 236, 243, 150);
+                    border: none;
+                    border-radius: 18px;
                 }
                 QPushButton#EmptyTileAddButton:pressed {
                     color: #17212A;
-                    background: #E4EBF1;
-                    border: 1px solid #8FA4B8;
+                    background: rgba(216, 226, 235, 190);
+                    border: none;
+                    border-radius: 18px;
                 }
                 """
             )
@@ -349,22 +397,23 @@ class VideoTile(QtWidgets.QFrame):
             button.setStyleSheet(
                 """
                 QPushButton#EmptyTileAddButton {
-                    font-size: 30px;
-                    font-weight: 500;
+                    font-size: 56px;
+                    font-weight: 600;
                     color: rgba(255, 255, 255, 232);
-                    background: rgba(16, 18, 22, 140);
-                    border: 1px solid rgba(255, 255, 255, 34);
-                    border-radius: 28px;
-                    padding: 0 0 3px 0;
+                    background: transparent;
+                    border: none;
+                    padding: 0 0 0 6px;
                 }
                 QPushButton#EmptyTileAddButton:hover {
                     color: rgba(255, 255, 255, 248);
-                    background: rgba(28, 32, 38, 168);
-                    border: 1px solid rgba(255, 255, 255, 52);
+                    background: rgba(24, 28, 34, 124);
+                    border: none;
+                    border-radius: 18px;
                 }
                 QPushButton#EmptyTileAddButton:pressed {
-                    background: rgba(10, 12, 16, 176);
-                    border: 1px solid rgba(255, 255, 255, 44);
+                    background: rgba(14, 18, 24, 156);
+                    border: none;
+                    border-radius: 18px;
                 }
                 """
             )
@@ -377,6 +426,43 @@ class VideoTile(QtWidgets.QFrame):
         shadow.setBlurRadius(shadow_blur)
         shadow.setOffset(0, 2)
         shadow.setColor(shadow_color)
+
+    def _refresh_add_hint_style(self):
+        label = getattr(self, "add_hint_label", None)
+        if label is None:
+            return
+        label.setText(tr(self, "클릭 또는 파일 드롭"))
+        theme = self._add_button_theme()
+        if theme == "white":
+            label.setStyleSheet(
+                "font-size: 11px; font-weight: 600; color: rgba(65,83,98,210);"
+                "background: transparent; padding: 0 6px;"
+            )
+        else:
+            label.setStyleSheet(
+                "font-size: 11px; font-weight: 600; color: rgba(255,255,255,190);"
+                "background: transparent; padding: 0 6px;"
+            )
+        label.adjustSize()
+
+    def _position_empty_tile_affordances(self):
+        button = getattr(self, "add_button", None)
+        if button is None:
+            return
+        rect = self.rect()
+        center = rect.center()
+        button.move(
+            center.x() - button.width() // 2,
+            center.y() - button.height() // 2 - 10,
+        )
+        label = getattr(self, "add_hint_label", None)
+        if label is None:
+            return
+        label.adjustSize()
+        label.move(
+            center.x() - label.width() // 2,
+            button.y() + button.height() - 2,
+        )
 
     def _bind_tile_context_menu(self, widget):
         bind_tile_context_menu_impl(self, widget)
@@ -572,8 +658,17 @@ class VideoTile(QtWidgets.QFrame):
     def _sync_other_tiles_to_this_timecode(self):
         sync_other_tiles_to_this_timecode_impl(self)
 
+    def _sync_other_tiles_to_this_progress(self):
+        sync_other_tiles_to_this_progress_impl(self)
+
     def _open_focus_review_from_context(self):
         open_focus_review_from_context_impl(self)
+
+    def _rename_current_media_from_context(self):
+        rename_current_media_from_context_impl(self)
+
+    def _move_current_media_from_context(self):
+        move_current_media_from_context_impl(self)
 
     def _bookmark_marker_select_mode_active(self) -> bool:
         return bookmark_marker_select_mode_active_impl(self)
@@ -823,7 +918,7 @@ class VideoTile(QtWidgets.QFrame):
                     self.sld_pos.setValue(int((float(target_ms) / float(max(1, length_ms))) * self.sld_pos.maximum()))
                 finally:
                     self.sld_pos.blockSignals(False)
-            self.lbl_time.setText(f"{self._ms_to_hms(target_ms)} / {self._ms_to_hms(length_ms)}")
+            self._set_time_label_text(f"{self._ms_to_hms(target_ms)} / {self._ms_to_hms(length_ms)}")
         if show_overlay:
             self._show_seek_overlay_ms(target_ms)
 
@@ -863,7 +958,7 @@ class VideoTile(QtWidgets.QFrame):
         self.mediaplayer.set_time(new_ms)
         new_pos = new_ms / length_ms
         self.sld_pos.setValue(int(new_pos * self.sld_pos.maximum()))
-        self.lbl_time.setText(f"{self._ms_to_hms(new_ms)} / {self._ms_to_hms(length_ms)}")
+        self._set_time_label_text(f"{self._ms_to_hms(new_ms)} / {self._ms_to_hms(length_ms)}")
         self._show_seek_overlay_ms(new_ms)
 
     def bind_hwnd(self, force: bool = False):
@@ -895,9 +990,6 @@ class VideoTile(QtWidgets.QFrame):
 
     def set_transform_mode(self, mode: str):
         set_transform_mode_impl(self, mode)
-
-    def set_zoom_percent(self, percent: int):
-        set_zoom_percent_impl(self, percent)
 
     def _apply_display_mode(self):
         apply_display_mode_impl(self)
@@ -1048,7 +1140,7 @@ class VideoTile(QtWidgets.QFrame):
                 self.sld_pos.setValue(int(pos * self.sld_pos.maximum()))
                 length_ms = self.mediaplayer.get_length()
                 current_ms = int(pos * length_ms)
-                self.lbl_time.setText(f"{self._ms_to_hms(current_ms)} / {self._ms_to_hms(length_ms)}")
+                self._set_time_label_text(f"{self._ms_to_hms(current_ms)} / {self._ms_to_hms(length_ms)}")
             if self.loop_enabled and self.posA is not None and self.posB is not None:
                 if pos >= self.posB:
                     self.mediaplayer.set_position(self.posA)
@@ -1056,8 +1148,14 @@ class VideoTile(QtWidgets.QFrame):
                 end_ms = getattr(self, "_playlist_bookmark_end_ms", None)
                 if end_ms is not None and current_ms >= max(0, int(end_ms) - 80):
                     self._playlist_bookmark_guard_active = False
-                    self.pause()
-                    self.seek_ms(int(end_ms), play=False, show_overlay=False)
+                    auto_advance = bool(getattr(self, "_playlist_bookmark_auto_advance", False))
+                    self._playlist_bookmark_auto_advance = False
+                    if auto_advance and self._advance_current_playlist_bookmark(1):
+                        self._apply_current_playlist_start_position()
+                        self.play()
+                    else:
+                        self.pause()
+                        self.seek_ms(int(end_ms), play=False, show_overlay=False)
 
     def set_position(self, pos: Optional[float] = None, show_overlay: bool = True):
         if pos is None:
@@ -1179,20 +1277,28 @@ class VideoTile(QtWidgets.QFrame):
             is_playing = bool(self.mediaplayer.is_playing())
         except Exception:
             is_playing = False
-        self.btn_play.setText("⏸" if is_playing else "▶")
-        self._set_toggle_button_style(self.btn_play, is_playing)
+        font = self.btn_play.font()
+        font.setPointSize(10 if is_playing else 13)
+        font.setBold(True)
+        self.btn_play.setFont(font)
+        self.btn_play.setIcon(QtGui.QIcon())
+        self.btn_play.setText("Ⅱ" if is_playing else "▶")
+        self.btn_play.setStyleSheet("padding: 0px;")
 
     def _update_ab_controls(self):
         if self.loop_enabled and self.posA is not None and self.posB is not None:
             self.btn_A.setText("AB")
             self._set_toggle_button_style(self.btn_A, True)
+            self._fit_ab_loop_button_hitbox()
             return
         if self.posA is not None:
             self.btn_A.setText("A")
             self._set_toggle_button_style(self.btn_A, True)
+            self._fit_ab_loop_button_hitbox()
             return
         self.btn_A.setText("A")
         self._set_toggle_button_style(self.btn_A, False)
+        self._fit_ab_loop_button_hitbox()
 
     # 구간반복 토글
     def toggle_loop(self, checked):
@@ -1473,10 +1579,8 @@ class VideoTile(QtWidgets.QFrame):
         from_state_impl(self, state)
 
     def set_border_visible(self, visible: bool):
-        if visible:
-            self.setStyleSheet("border: 1px solid black;")
-        else:
-            self.setStyleSheet("border: none;")
+        self._border_visible = bool(visible)
+        refresh_selection_visuals_impl(self)
 
 
     def set_compact_mode(self, enabled: bool):
@@ -1499,43 +1603,44 @@ class VideoTile(QtWidgets.QFrame):
         visible = bool(getattr(self, "_controls_requested_visible", True)) and not bool(
             getattr(self, "_compact_mode", False)
         )
+        self._ui_chrome_visible = visible
         if controls_container.isHidden() != (not visible):
             controls_container.setVisible(visible)
         if hasattr(self, "sld_vol") and hasattr(self, "btn_volume_toggle"):
             self.sld_vol.setVisible(visible and self.btn_volume_toggle.isChecked())
+        refresh_selection_visuals_impl(self)
 
 
     def _update_add_button(self):
-        """playlist가 비었을 때 + 버튼 표시"""
+        """playlist가 비었을 때 플레이 모양 버튼 표시"""
         if not self.playlist:
             if not self.add_button:
-                self.add_button = QPushButton("+", self)
+                self.add_button = QPushButton("▶", self)
                 self.add_button.clicked.connect(self._on_add_clicked)
                 self._bind_tile_context_menu(self.add_button)
+            if not self.add_hint_label:
+                self.add_hint_label = QtWidgets.QLabel("", self)
+                self.add_hint_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                self.add_hint_label.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
             self._refresh_add_button_style()
-
-            # 버튼 중앙 배치
-            rect = self.rect()
-            self.add_button.move(
-                rect.center().x() - self.add_button.width() // 2,
-                rect.center().y() - self.add_button.height() // 2
-            )
+            self._refresh_add_hint_style()
+            self._position_empty_tile_affordances()
             self.add_button.show()
+            self.add_hint_label.show()
             self.add_button.raise_()  # 항상 맨 위로
+            self.add_hint_label.raise_()
         else:
             if self.add_button:
                 self.add_button.hide()
+            if self.add_hint_label:
+                self.add_hint_label.hide()
 
     def resizeEvent(self, event):
         """타일 리사이즈 시 + 버튼도 중앙으로 이동"""
         super().resizeEvent(event)
         self._update_add_button()
         if self.add_button and self.add_button.isVisible():
-            rect = self.rect()
-            self.add_button.move(
-                rect.center().x() - self.add_button.width() // 2,
-                rect.center().y() - self.add_button.height() // 2
-            )
+            self._position_empty_tile_affordances()
         self._place_mute_overlay()
         self._place_seek_overlay()
         self._place_volume_overlay()
@@ -1551,6 +1656,7 @@ class VideoTile(QtWidgets.QFrame):
             pass
         self._refresh_image_display()
         self._apply_display_mode()
+        refresh_border_frame_impl(self)
 
     def _add_files(self):
         """파일 선택창 열고 playlist 채우기"""
@@ -1598,7 +1704,17 @@ class VideoTile(QtWidgets.QFrame):
         if not urls:
             return
 
-        files = [u.toLocalFile() for u in urls if u.isLocalFile()]
+        files = []
+        for url in urls:
+            if not url.isLocalFile():
+                continue
+            path = url.toLocalFile()
+            if not path:
+                continue
+            if os.path.isdir(path):
+                files.extend(self._collect_video_files(path))
+            else:
+                files.append(path)
         if not files:
             return
         mainwin = self._main_window()
@@ -1908,7 +2024,10 @@ class VideoTile(QtWidgets.QFrame):
         if not hasattr(self, "volume_overlay"):
             return
         raw = max(0, min(120, int(getattr(self, "tile_volume", 120))))
-        self.volume_overlay.setText(f"{raw}%")
+        if hasattr(self, "volume_overlay_label"):
+            self.volume_overlay_label.setText(f"{raw}%")
+        if hasattr(self, "volume_overlay_slider"):
+            self.volume_overlay_slider.setValue(raw)
         self._place_volume_overlay()
         self.volume_overlay.show()
         self.volume_overlay.raise_()

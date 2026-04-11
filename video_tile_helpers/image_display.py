@@ -29,8 +29,7 @@ def _display_pixmap(tile: "VideoTile", target_size: QtCore.QSize) -> Optional[Qt
         return None
     if target_size.width() <= 0 or target_size.height() <= 0:
         return None
-    scaled = _scale_display_pixmap(tile, pixmap, target_size)
-    return _apply_zoom_to_pixmap(tile, scaled, target_size)
+    return _scale_display_pixmap(tile, pixmap, target_size)
 
 
 def _scale_display_pixmap(
@@ -47,34 +46,6 @@ def _scale_display_pixmap(
         aspect_mode,
         QtCore.Qt.TransformationMode.SmoothTransformation,
     )
-
-
-def _apply_zoom_to_pixmap(
-    tile: "VideoTile",
-    pixmap: QtGui.QPixmap,
-    target_size: QtCore.QSize,
-) -> QtGui.QPixmap:
-    try:
-        zoom_percent = int(getattr(tile, "zoom_percent", 100) or 100)
-    except Exception:
-        zoom_percent = 100
-    if zoom_percent == 100:
-        return pixmap
-    factor = max(0.25, min(4.0, float(zoom_percent) / 100.0))
-    scaled = pixmap.scaled(
-        max(1, int(round(pixmap.width() * factor))),
-        max(1, int(round(pixmap.height() * factor))),
-        QtCore.Qt.AspectRatioMode.IgnoreAspectRatio,
-        QtCore.Qt.TransformationMode.SmoothTransformation,
-    )
-    canvas = QtGui.QPixmap(target_size)
-    canvas.fill(QtCore.Qt.GlobalColor.transparent)
-    painter = QtGui.QPainter(canvas)
-    x = int((target_size.width() - scaled.width()) / 2)
-    y = int((target_size.height() - scaled.height()) / 2)
-    painter.drawPixmap(x, y, scaled)
-    painter.end()
-    return canvas
 
 
 def _display_aspect_mode(mode: str):
@@ -105,7 +76,7 @@ def set_image_mode_enabled(tile: "VideoTile", enabled: bool):
     if enabled:
         _reset_image_playback_state(tile)
     elif tile.lbl_time.text() == "이미지":
-        tile.lbl_time.setText("00:00 / 00:00")
+        tile._set_time_label_text("00:00 / 00:00")
     tile._apply_controls_visibility()
 
 
@@ -143,7 +114,7 @@ def _reset_image_playback_state(tile: "VideoTile"):
     tile.posA = None
     tile.posB = None
     tile.loop_enabled = False
-    tile.lbl_time.setText("이미지")
+    tile._set_time_label_text("이미지")
     tile._update_ab_controls()
     tile._update_repeat_button()
 

@@ -2,13 +2,20 @@
 
 import sys, os, multiprocessing
 from typing import List, Optional, Dict, Any
-from PyQt6 import QtCore, QtGui, QtWidgets
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(APP_DIR)
-for import_path in (APP_DIR, PROJECT_ROOT):
-    if import_path not in sys.path:
-        sys.path.insert(0, import_path)
+_THIS_FILE = os.path.abspath(__file__)
+_THIS_DIR = os.path.dirname(_THIS_FILE)
+_APP_PARENT_DIR = os.path.dirname(_THIS_DIR)
+if os.path.isdir(os.path.join(_THIS_DIR, "app_shell")):
+    _IMPORT_ROOT = _THIS_DIR
+elif os.path.isdir(os.path.join(_APP_PARENT_DIR, "app_shell")):
+    _IMPORT_ROOT = _APP_PARENT_DIR
+else:
+    _IMPORT_ROOT = _THIS_DIR
+if _IMPORT_ROOT not in sys.path:
+    sys.path.insert(0, _IMPORT_ROOT)
+
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from app_shell.config import _default_config_path
 from canvas import Canvas  # canvas.py 임포트
@@ -54,6 +61,7 @@ from app_shell.interaction import (
     rebuild_tile_hotkeys as rebuild_tile_hotkeys_impl,
     refresh_fullscreen_hover_from_cursor as refresh_fullscreen_hover_from_cursor_impl,
     register_tile_hotkey as register_tile_hotkey_impl,
+    resolve_edge_hover_ui_mode as resolve_edge_hover_ui_mode_impl,
     restore_managed_window_focus as restore_managed_window_focus_impl,
     restore_window_focus as restore_window_focus_impl,
     schedule_fullscreen_hover_refresh_from_cursor as schedule_fullscreen_hover_refresh_from_cursor_impl,
@@ -121,6 +129,8 @@ from main_playlist import (
     update_playlist as update_playlist_impl,
 )
 from app_shell.playlist_current import (
+    clear_all_tile_playlists as clear_all_tile_playlists_impl,
+    clear_selected_tile_playlists as clear_selected_tile_playlists_impl,
     remove_current_playlist_items as remove_current_playlist_items_impl,
     trash_current_playlist_items as trash_current_playlist_items_impl,
 )
@@ -154,6 +164,8 @@ from app_shell.state import (
     apply_view_state as apply_view_state_impl,
     build_profile_payload as build_profile_payload_impl,
     build_session_payload as build_session_payload_impl,
+    clear_recent_media_history as clear_recent_media_history_impl,
+    clear_recent_profiles_history as clear_recent_profiles_history_impl,
     close_event as close_event_impl,
     default_tile_count as default_tile_count_impl,
     load_config_and_restore as load_config_and_restore_impl,
@@ -180,8 +192,23 @@ from app_shell.session import SessionManager
 from app_shell.shortcut_dialog import ShortcutDialog
 from app_shell.app_icon import multi_play_app_icon
 from app_shell.dock_chrome import refresh_aux_dock_chrome
-from app_shell.theme import apply_ui_theme, normalize_ui_theme, remember_system_theme, theme_label_key
-from i18n import SUPPORTED_UI_LANGUAGES, language_name, normalize_ui_language, tr
+from app_shell.interaction_ui_state import (
+    UI_VISIBILITY_ALWAYS,
+    UI_VISIBILITY_AUTO,
+    UI_VISIBILITY_HIDDEN,
+    normalize_ui_visibility_mode,
+    normalize_windowed_ui_auto_hide_ms,
+)
+from app_shell.theme import (
+    DEFAULT_LIGHT_THEME_BRIGHTNESS,
+    apply_ui_theme,
+    is_dark_palette,
+    normalize_light_theme_brightness,
+    normalize_ui_theme,
+    remember_system_theme,
+    theme_label_key,
+)
+from i18n import SUPPORTED_UI_LANGUAGES, default_ui_language, language_name, normalize_ui_language, tr
 from video_tile_helpers.support import VIDEO_FILE_EXTENSIONS, media_file_dialog_filter
 from PyQt6.QtWidgets import QMessageBox
 import vlc
@@ -208,10 +235,36 @@ class MainWin(QtWidgets.QMainWindow):
         initialize_main_window_post_restore(self)
 
     def current_ui_language(self) -> str:
-        return normalize_ui_language(getattr(self, "ui_language", self.config.get("language", "ko")))
+        return normalize_ui_language(getattr(self, "ui_language", self.config.get("language", default_ui_language())))
 
     def current_ui_theme(self) -> str:
         return normalize_ui_theme(getattr(self, "ui_theme", self.config.get("theme", "black")))
+
+    def current_light_theme_brightness(self) -> int:
+        return normalize_light_theme_brightness(
+            getattr(
+                self,
+                "light_theme_brightness",
+                self.config.get("light_theme_brightness", DEFAULT_LIGHT_THEME_BRIGHTNESS),
+            )
+        )
+
+    def current_ui_visibility_mode(self) -> str:
+        raw = getattr(self, "_ui_visibility_mode", None)
+        if raw is None:
+            raw = self.config.get("ui_visibility_mode", "")
+        fallback = UI_VISIBILITY_HIDDEN if bool(self.config.get("compact_mode", False)) else UI_VISIBILITY_ALWAYS
+        return normalize_ui_visibility_mode(raw, fallback=fallback)
+
+    def current_windowed_ui_auto_hide_ms(self) -> int:
+        raw = getattr(self, "_windowed_ui_auto_hide_ms", None)
+        if raw is None:
+            raw = self.config.get("ui_auto_hide_ms", None)
+        return normalize_windowed_ui_auto_hide_ms(raw)
+
+    def _current_windowed_ui_auto_hide_label(self) -> str:
+        seconds = f"{self.current_windowed_ui_auto_hide_ms() / 1000:.1f}".rstrip("0").rstrip(".")
+        return self._tr("{seconds}초", seconds=seconds)
 
     def _tr(self, text: str, **kwargs: Any) -> str:
         return tr(self, text, **kwargs)
@@ -220,6 +273,8 @@ class MainWin(QtWidgets.QMainWindow):
         self.layout_mode_menu.setTitle(self._tr("타일 배치 방식"))
         for mode, action in getattr(self, "layout_mode_actions", {}).items():
             action.setText(self._tr(Canvas.LAYOUT_LABELS.get(mode, mode)))
+        for axis, submenu in getattr(self, "roller_axis_menus", {}).items():
+            submenu.setTitle(self._tr(Canvas.ROLLER_AXIS_LABELS.get(axis, axis)))
         for mode, submenu in getattr(self, "roller_layout_menus", {}).items():
             submenu.setTitle(self._tr(Canvas.LAYOUT_LABELS.get(mode, mode)))
         for (_mode, count), action in getattr(self, "roller_layout_actions", {}).items():
@@ -240,6 +295,53 @@ class MainWin(QtWidgets.QMainWindow):
             with QtCore.QSignalBlocker(action):
                 action.setText(self._tr(theme_label_key(code)))
                 action.setChecked(code == current)
+        brightness = self.current_light_theme_brightness()
+        brightness_menu = getattr(self, "theme_brightness_menu", None)
+        if brightness_menu is not None:
+            brightness_menu.setTitle(self._tr("라이트 테마 밝기 ({percent}%)", percent=brightness))
+            brightness_menu.setEnabled(self._light_theme_brightness_is_effective())
+        for percent, action in getattr(self, "theme_brightness_actions", {}).items():
+            with QtCore.QSignalBlocker(action):
+                action.setText(self._tr("{percent}%", percent=percent))
+                action.setChecked(int(percent) == int(brightness))
+
+    def _refresh_ui_visibility_menu_texts(self):
+        menu = getattr(self, "ui_visibility_menu", None)
+        if menu is not None:
+            menu.setTitle(self._tr("UI 상태"))
+        current = self.current_ui_visibility_mode()
+        labels = {
+            UI_VISIBILITY_ALWAYS: "항상 표시",
+            UI_VISIBILITY_HIDDEN: "숨김",
+            UI_VISIBILITY_AUTO: "자동 숨김",
+        }
+        for mode, action in getattr(self, "ui_visibility_actions", {}).items():
+            with QtCore.QSignalBlocker(action):
+                action.setText(self._tr(labels.get(mode, mode)))
+                action.setChecked(mode == current)
+        duration_menu = getattr(self, "ui_auto_hide_duration_menu", None)
+        if duration_menu is not None:
+            duration_menu.setTitle(self._tr("자동 숨김 시간 ({seconds})", seconds=self._current_windowed_ui_auto_hide_label()))
+        current_duration = self.current_windowed_ui_auto_hide_ms()
+        for duration_ms, action in getattr(self, "ui_auto_hide_duration_actions", {}).items():
+            seconds = f"{int(duration_ms) / 1000:.1f}".rstrip("0").rstrip(".")
+            with QtCore.QSignalBlocker(action):
+                action.setText(self._tr("{seconds}초", seconds=seconds))
+                action.setChecked(int(duration_ms) == int(current_duration))
+
+    def _light_theme_brightness_is_effective(self) -> bool:
+        theme = self.current_ui_theme()
+        if theme == "white":
+            return True
+        if theme != "system":
+            return False
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            return False
+        try:
+            return not is_dark_palette(app.palette())
+        except Exception:
+            return False
 
     def _refresh_open_scene_dialog_language(self):
         for tile in list(getattr(self.canvas, "tiles", []) or []):
@@ -267,6 +369,7 @@ class MainWin(QtWidgets.QMainWindow):
         self.view_menu.setTitle(self._tr("보기"))
         self.border_action.setText(self._tr("타일 테두리 표시"))
         self.compact_action.setText(self._tr("영상만 보기 모드"))
+        self._refresh_ui_visibility_menu_texts()
         self.always_on_top_action.setText(self._tr("재생 중 항상 위"))
         self.act_docked_tiles_opacity.setText(self._tr("비교 오버레이 열기..."))
         compare_button = getattr(self, "btn_docked_tiles_opacity", None)
@@ -279,6 +382,7 @@ class MainWin(QtWidgets.QMainWindow):
             self.btn_opacity_mode_redock.setText(self._tr("복귀"))
         self._refresh_layout_mode_menu_texts()
         self.act_pause_roller.setText(self._tr("롤러 정지"))
+        self.act_reverse_roller.setText(self._tr("롤러 역방향"))
         self.keep_detached_focus_mode_action.setText(self._tr("전체화면/스포트라이트 시 분리 유지"))
         self.list_menu.setTitle(self._tr("리스트"))
         self.bookmark_menu.setTitle(self._tr("리스트"))
@@ -325,10 +429,12 @@ class MainWin(QtWidgets.QMainWindow):
     def _apply_ui_theme(self, *, save: bool = False, announce: bool = False):
         normalized = self.current_ui_theme()
         self.ui_theme = normalized
+        self.light_theme_brightness = self.current_light_theme_brightness()
         self.config["theme"] = normalized
+        self.config["light_theme_brightness"] = self.light_theme_brightness
         app = QtWidgets.QApplication.instance()
         if app is not None:
-            apply_ui_theme(app, normalized)
+            apply_ui_theme(app, normalized, self.light_theme_brightness)
         for dock_name in ("playlist_dock", "bookmark_dock"):
             dock = getattr(self, dock_name, None)
             if dock is not None:
@@ -377,6 +483,22 @@ class MainWin(QtWidgets.QMainWindow):
             return
         self.ui_theme = normalized
         self._apply_ui_theme(save=save, announce=announce)
+
+    def set_light_theme_brightness(self, brightness: int, *, save: bool = True, announce: bool = True):
+        normalized = normalize_light_theme_brightness(brightness)
+        if normalized == self.current_light_theme_brightness():
+            self._refresh_theme_menu_texts()
+            return
+        self.light_theme_brightness = normalized
+        self._apply_ui_theme(save=save, announce=False)
+        if announce:
+            try:
+                self.statusBar().showMessage(
+                    self._tr("라이트 테마 밝기: {percent}%", percent=normalized),
+                    3000,
+                )
+            except Exception:
+                pass
 
     def _handle_escape(self):
         try:
@@ -439,6 +561,12 @@ class MainWin(QtWidgets.QMainWindow):
 
     def _prune_recent_profiles(self):
         return prune_recent_profiles_impl(self)
+
+    def clear_recent_media_history(self):
+        return clear_recent_media_history_impl(self)
+
+    def clear_recent_profiles_history(self):
+        return clear_recent_profiles_history_impl(self)
 
     def _restore_window_state(self, payload: Any):
         return restore_window_state_impl(self, payload)
@@ -514,6 +642,88 @@ class MainWin(QtWidgets.QMainWindow):
 
     def _show_ui(self):
         return show_ui_impl(self)
+
+    def _apply_windowed_ui_mode(self, mode: str, tile=None):
+        if mode == self._windowed_ui_mode:
+            if mode != "tile" or tile is self._windowed_ui_tile:
+                return
+        if mode == "tile":
+            self._show_tile_ui(tile)
+            self._windowed_ui_mode = "tile"
+            self._windowed_ui_tile = tile
+            return
+        if mode == "top":
+            self._show_top_ui(True)
+            self._show_all_tile_controls(False)
+            self._windowed_ui_mode = "top"
+            self._windowed_ui_tile = None
+            return
+        if mode == "all":
+            self._show_top_ui(True)
+            self._show_all_tile_controls(True)
+            self._windowed_ui_mode = "all"
+            self._windowed_ui_tile = None
+            return
+        self._show_top_ui(False)
+        self._show_all_tile_controls(False)
+        self._windowed_ui_mode = "hidden"
+        self._windowed_ui_tile = None
+
+    def _restart_windowed_ui_hide_timer(self):
+        timer = getattr(self, "_windowed_ui_hide_timer", None)
+        if timer is None:
+            return
+        if self._is_fullscreen() or self.current_ui_visibility_mode() != UI_VISIBILITY_AUTO:
+            timer.stop()
+            return
+        timer.setInterval(self.current_windowed_ui_auto_hide_ms())
+        timer.start()
+
+    def _hide_windowed_ui_for_auto(self):
+        if self._is_fullscreen() or self.current_ui_visibility_mode() != UI_VISIBILITY_AUTO:
+            return
+        try:
+            pos = QtGui.QCursor.pos()
+        except Exception:
+            pos = None
+        if isinstance(pos, QtCore.QPoint):
+            try:
+                win_geom = self.frameGeometry()
+            except Exception:
+                win_geom = self.geometry()
+            if win_geom.contains(pos) and not self._should_bypass_global_mouse_handling(pos):
+                hover_tile = self.canvas.docked_tile_at_global(pos)
+                if hover_tile is None:
+                    hover_tile = self._tile_at_global(pos)
+                desired_mode, desired_tile = resolve_edge_hover_ui_mode_impl(self, pos, hover_tile, win_geom)
+                if desired_mode != "hidden":
+                    self._apply_windowed_ui_mode(desired_mode, desired_tile)
+                    self._restart_windowed_ui_hide_timer()
+                    return
+        self._apply_windowed_ui_mode("hidden")
+
+    def _handle_windowed_ui_hover_at(self, pos: QtCore.QPoint) -> bool:
+        if self._is_fullscreen() or self.current_ui_visibility_mode() != UI_VISIBILITY_AUTO:
+            return False
+        if self._should_bypass_global_mouse_handling(pos):
+            return False
+        try:
+            win_geom = self.frameGeometry()
+        except Exception:
+            win_geom = self.geometry()
+        if not win_geom.contains(pos):
+            return False
+        hover_tile = self.canvas.docked_tile_at_global(pos)
+        if hover_tile is None:
+            hover_tile = self._tile_at_global(pos)
+        desired_mode, desired_tile = resolve_edge_hover_ui_mode_impl(self, pos, hover_tile, win_geom)
+        if desired_mode == "hidden" and self._windowed_ui_mode != "hidden":
+            desired_mode = self._windowed_ui_mode
+            desired_tile = self._windowed_ui_tile if desired_mode == "tile" else None
+        self._apply_windowed_ui_mode(desired_mode, desired_tile)
+        if desired_mode != "hidden":
+            self._restart_windowed_ui_hide_timer()
+        return False
 
     def _sync_windowed_ui_from_compact_mode(self):
         return sync_windowed_ui_from_compact_mode_impl(self)
@@ -730,6 +940,46 @@ class MainWin(QtWidgets.QMainWindow):
         except Exception:
             return
 
+    def _apply_aux_dock_always_on_top(self, dock, enabled: Optional[bool] = None) -> None:
+        if dock is None:
+            return
+        try:
+            checked = (
+                bool(enabled)
+                if enabled is not None
+                else bool(getattr(getattr(self, "always_on_top_action", None), "isChecked", lambda: False)())
+            )
+            should_topmost = bool(checked and dock.isFloating())
+            previous = bool(getattr(dock, "_multi_play_topmost_applied", False))
+            if previous == should_topmost:
+                return
+            was_visible = bool(dock.isVisible())
+            was_maximized = bool(dock.isMaximized())
+            was_fullscreen = bool(dock.isFullScreen())
+            geom = dock.geometry()
+            dock.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, should_topmost)
+            if was_fullscreen:
+                dock.showFullScreen()
+            elif was_maximized:
+                dock.showMaximized()
+            elif was_visible:
+                dock.show()
+                dock.setGeometry(geom)
+            else:
+                dock.setGeometry(geom)
+            setattr(dock, "_multi_play_topmost_applied", should_topmost)
+            if was_visible:
+                try:
+                    dock.raise_()
+                except Exception:
+                    pass
+                try:
+                    dock.activateWindow()
+                except Exception:
+                    pass
+        except RuntimeError:
+            return
+
     def _sync_aux_dock_owner(self, dock):
         if sys.platform != "win32" or dock is None:
             return
@@ -743,6 +993,7 @@ class MainWin(QtWidgets.QMainWindow):
             floating = False
         owner_hwnd = 0 if floating else int(self.winId())
         self._set_native_window_owner(hwnd, owner_hwnd)
+        self._apply_aux_dock_always_on_top(dock)
 
     def _handle_main_window_state_change(self, old_state):
         try:
@@ -813,15 +1064,27 @@ class MainWin(QtWidgets.QMainWindow):
             self.canvas.remove_tile(self.canvas.tiles[-1])
 
     def open_files_into_new_tiles(self):
-        while self.canvas.tiles:
-            self.canvas.remove_tile(self.canvas.tiles[-1])
         start_dir = getattr(self, "last_dir", "") or os.path.expanduser("~")
-        files, _ = QtWidgets.QFileDialog.getOpenFileNames(self, self._tr("영상 열기"), start_dir)
+        files, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self,
+            self._tr("영상 열기"),
+            start_dir,
+            media_file_dialog_filter(),
+        )
         if not files:
             return
         self.last_dir = os.path.dirname(files[0])
         self.config["last_dir"] = self.last_dir
         self._push_recent_media_many(files, kind="path")
+        if self.canvas.infinite_roller_active():
+            self.canvas.set_infinite_roller_sources(files)
+            self.update_playlist()
+            self.canvas.relayout()
+            QtCore.QTimer.singleShot(0, self.canvas.play_all)
+            self.setFocus()
+            return
+        while self.canvas.tiles:
+            self.canvas.remove_tile(self.canvas.tiles[-1])
         for i, path in enumerate(files):
             self.add_video()
             tile = self.canvas.tiles[-1]
@@ -831,11 +1094,23 @@ class MainWin(QtWidgets.QMainWindow):
 
     def open_multiple_videos(self, distribute=True):
         start_dir = self.config.get("last_dir", "") or ""
-        files, _ = QtWidgets.QFileDialog.getOpenFileNames(self, self._tr("영상 열기"), start_dir)
+        files, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self,
+            self._tr("영상 열기"),
+            start_dir,
+            media_file_dialog_filter(),
+        )
         if not files:
             return
         self.config["last_dir"] = os.path.dirname(files[0])
         self._push_recent_media_many(files, kind="path")
+        if self.canvas.infinite_roller_active():
+            self.canvas.set_infinite_roller_sources(files)
+            self.update_playlist()
+            self.canvas.relayout()
+            QtCore.QTimer.singleShot(0, self.canvas.play_all)
+            self.setFocus()
+            return
 
         if not distribute:
             while self.canvas.tiles:
@@ -973,6 +1248,8 @@ class MainWin(QtWidgets.QMainWindow):
             return
         label = self._stream_display_name(source)
         try:
+            if hasattr(tile, "_restore_media_title_hitbox"):
+                tile._restore_media_title_hitbox()
             fm = tile.title.fontMetrics()
             width = tile.title.maximumWidth()
             elided = fm.elidedText(label, QtCore.Qt.TextElideMode.ElideRight, width)
@@ -1115,7 +1392,12 @@ class MainWin(QtWidgets.QMainWindow):
     def _sync_layout_mode_menu_checks(self):
         normalized = self.canvas.layout_mode()
         action = getattr(self, "layout_mode_actions", {}).get(normalized)
-        if normalized in {Canvas.LAYOUT_ROLLER_ROW, Canvas.LAYOUT_ROLLER_COLUMN}:
+        if normalized in {
+            Canvas.LAYOUT_ROLLER_ROW,
+            Canvas.LAYOUT_ROLLER_COLUMN,
+            Canvas.LAYOUT_INFINITE_ROLLER_ROW,
+            Canvas.LAYOUT_INFINITE_ROLLER_COLUMN,
+        }:
             action = getattr(self, "roller_layout_actions", {}).get(
                 (normalized, self.canvas.roller_visible_count())
             )
@@ -1141,7 +1423,7 @@ class MainWin(QtWidgets.QMainWindow):
 
     def set_roller_layout_mode(self, mode: str, count: int):
         normalized_mode = Canvas.normalize_layout_mode(mode)
-        if normalized_mode not in {Canvas.LAYOUT_ROLLER_ROW, Canvas.LAYOUT_ROLLER_COLUMN}:
+        if normalized_mode not in Canvas._roller_layout_modes():
             return
         normalized_count = Canvas.normalize_roller_visible_count(count)
         self.canvas.set_roller_visible_count(normalized_count)
@@ -1152,6 +1434,16 @@ class MainWin(QtWidgets.QMainWindow):
         normalized = bool(paused)
         self.canvas.set_roller_paused(normalized)
         action = getattr(self, "act_pause_roller", None)
+        if action is not None and action.isChecked() != normalized:
+            action.setChecked(normalized)
+
+    def set_roller_reversed(self, reversed_: bool):
+        normalized = bool(reversed_)
+        direction = (
+            Canvas.ROLLER_DIRECTION_REVERSE if normalized else Canvas.ROLLER_DIRECTION_FORWARD
+        )
+        self.canvas.set_roller_direction(direction)
+        action = getattr(self, "act_reverse_roller", None)
         if action is not None and action.isChecked() != normalized:
             action.setChecked(normalized)
 
@@ -1362,11 +1654,40 @@ class MainWin(QtWidgets.QMainWindow):
         self._show_opacity_mode_widget(dock)
 
     def toggle_compact_mode(self, checked: bool):
+        del checked
+        current = self.current_ui_visibility_mode()
+        if current == UI_VISIBILITY_ALWAYS:
+            next_mode = UI_VISIBILITY_AUTO
+        elif current == UI_VISIBILITY_AUTO:
+            next_mode = UI_VISIBILITY_HIDDEN
+        else:
+            next_mode = UI_VISIBILITY_ALWAYS
+        self.set_ui_visibility_mode(next_mode, announce=True)
+
+    def set_ui_visibility_mode(self, mode: str, *, save: bool = True, announce: bool = False):
+        normalized = normalize_ui_visibility_mode(mode, fallback=UI_VISIBILITY_ALWAYS)
+        if normalized == self.current_ui_visibility_mode():
+            self.config["ui_visibility_mode"] = normalized
+            self.config["compact_mode"] = normalized == UI_VISIBILITY_HIDDEN
+            self._ui_visibility_mode = normalized
+            self._refresh_ui_visibility_menu_texts()
+            with QtCore.QSignalBlocker(self.compact_action):
+                self.compact_action.setChecked(normalized != UI_VISIBILITY_ALWAYS)
+            if save:
+                self.save_config()
+            return
         focus_target = self._capture_managed_focus_window()
-        self.canvas.set_compact_mode(checked)
-        self.canvas.set_detached_windows_compact_mode(checked)
+        self._ui_visibility_mode = normalized
+        self.config["ui_visibility_mode"] = normalized
+        self.config["compact_mode"] = normalized == UI_VISIBILITY_HIDDEN
+        with QtCore.QSignalBlocker(self.compact_action):
+            self.compact_action.setChecked(normalized != UI_VISIBILITY_ALWAYS)
+        self._refresh_ui_visibility_menu_texts()
+        hidden = normalized == UI_VISIBILITY_HIDDEN
+        self.canvas.set_compact_mode(hidden)
+        self.canvas.set_detached_windows_compact_mode(hidden)
         if self._is_fullscreen():
-            if checked:
+            if hidden:
                 self._apply_fullscreen_ui_mode("hidden")
             else:
                 self._show_cursor()
@@ -1376,6 +1697,42 @@ class MainWin(QtWidgets.QMainWindow):
             self._restore_managed_window_focus(focus_target)
         except Exception:
             pass
+        if save:
+            self.save_config()
+        if announce:
+            labels = {
+                UI_VISIBILITY_ALWAYS: self._tr("항상 표시"),
+                UI_VISIBILITY_HIDDEN: self._tr("숨김"),
+                UI_VISIBILITY_AUTO: self._tr("자동 숨김"),
+            }
+            try:
+                self.statusBar().showMessage(
+                    self._tr("UI 상태") + f": {labels.get(normalized, normalized)}",
+                    3000,
+                )
+            except Exception:
+                pass
+
+    def set_windowed_ui_auto_hide_ms(self, value: Any, *, save: bool = True, announce: bool = False):
+        normalized = normalize_windowed_ui_auto_hide_ms(value)
+        self._windowed_ui_auto_hide_ms = normalized
+        self.config["ui_auto_hide_ms"] = normalized
+        timer = getattr(self, "_windowed_ui_hide_timer", None)
+        if timer is not None:
+            timer.setInterval(normalized)
+            if self.current_ui_visibility_mode() == UI_VISIBILITY_AUTO and not self._is_fullscreen():
+                self._restart_windowed_ui_hide_timer()
+        self._refresh_ui_visibility_menu_texts()
+        if save:
+            self.save_config()
+        if announce:
+            try:
+                self.statusBar().showMessage(
+                    self._tr("자동 숨김 시간") + f": {self._current_windowed_ui_auto_hide_label()}",
+                    3000,
+                )
+            except Exception:
+                pass
 
     def _delete_selected(self):
         selected = self.canvas.get_selected_tiles()
@@ -1387,6 +1744,12 @@ class MainWin(QtWidgets.QMainWindow):
 
     def _remove_and_trash_file(self):
         trash_current_playlist_items_impl(self)
+
+    def _clear_selected_tile_playlists(self):
+        clear_selected_tile_playlists_impl(self)
+
+    def _clear_all_tile_playlists(self):
+        clear_all_tile_playlists_impl(self)
 
     def _delete_tile(self):
         for t in self.canvas.get_selected_tiles(for_delete=True):
@@ -1442,6 +1805,8 @@ class MainWin(QtWidgets.QMainWindow):
             except Exception:
                 pass
         self.canvas.set_detached_windows_on_top(checked)
+        for dock_name in ("playlist_dock", "bookmark_dock"):
+            self._apply_aux_dock_always_on_top(getattr(self, dock_name, None), enabled=checked)
         self.config["always_on_top"] = checked
 
     def toggle_always_on_top(self, checked: bool):
@@ -1474,6 +1839,14 @@ class MainWin(QtWidgets.QMainWindow):
                 self._tr("해당 폴더(하위 포함)에 영상 파일이 없습니다."),
             )
             return
+        self._push_recent_media_many(files, kind="path")
+        if self.canvas.infinite_roller_active():
+            self.canvas.set_infinite_roller_sources(files)
+            QtCore.QTimer.singleShot(0, self.update_playlist)
+            self.canvas.relayout()
+            QtCore.QTimer.singleShot(0, self.canvas.play_all)
+            self.setFocus()
+            return
 
         # 타일 없으면 기본 4개 생성
         if not self.canvas.tiles:
@@ -1501,10 +1874,7 @@ class MainWin(QtWidgets.QMainWindow):
         return bool(self.windowState() & QtCore.Qt.WindowState.WindowFullScreen) or self.isFullScreen()
 
     def _is_compact_mode(self) -> bool:
-        try:
-            return bool(self.compact_action.isChecked())
-        except Exception:
-            return False
+        return self.current_ui_visibility_mode() == UI_VISIBILITY_HIDDEN
 
     def _show_tile_ui(self, tile):
         """[수정] 특정 타일의 UI만 표시 (하단 영역 호버)"""
@@ -1762,6 +2132,22 @@ class MainWin(QtWidgets.QMainWindow):
 
     def _tile_at_global(self, gp: QtCore.QPoint, preferred_window: Optional[QtWidgets.QWidget] = None):
         try:
+            for dock_name in ("playlist_dock", "bookmark_dock"):
+                dock = getattr(self, dock_name, None)
+                if dock is None:
+                    continue
+                try:
+                    if not dock.isVisible() or dock.isFloating():
+                        continue
+                    rect = dock.rect()
+                    global_rect = QtCore.QRect(
+                        dock.mapToGlobal(rect.topLeft()),
+                        dock.mapToGlobal(rect.bottomRight()),
+                    )
+                    if global_rect.contains(gp):
+                        return None
+                except RuntimeError:
+                    continue
             tiles = list(getattr(self.canvas, "tiles", []))
             if not tiles:
                 return None
@@ -1793,6 +2179,22 @@ class MainWin(QtWidgets.QMainWindow):
 
     def _is_main_window_click_source(self, obj, gp: QtCore.QPoint) -> bool:
         try:
+            for dock_name in ("playlist_dock", "bookmark_dock"):
+                dock = getattr(self, dock_name, None)
+                if dock is None:
+                    continue
+                try:
+                    if not dock.isVisible() or dock.isFloating():
+                        continue
+                    rect = dock.rect()
+                    global_rect = QtCore.QRect(
+                        dock.mapToGlobal(rect.topLeft()),
+                        dock.mapToGlobal(rect.bottomRight()),
+                    )
+                    if global_rect.contains(gp):
+                        return False
+                except RuntimeError:
+                    continue
             source_top = obj.window() if isinstance(obj, QtWidgets.QWidget) else None
             w = obj if isinstance(obj, QtWidgets.QWidget) else None
             if w is None:
@@ -1802,6 +2204,30 @@ class MainWin(QtWidgets.QMainWindow):
                 top = w.window()
                 if source_top is not None and top is not source_top:
                     return False
+                interactive = w
+                while interactive is not None:
+                    if isinstance(
+                        interactive,
+                        (
+                            QtWidgets.QAbstractButton,
+                            QtWidgets.QAbstractSlider,
+                            QtWidgets.QAbstractSpinBox,
+                            QtWidgets.QLineEdit,
+                            QtWidgets.QTextEdit,
+                            QtWidgets.QPlainTextEdit,
+                            QtWidgets.QComboBox,
+                            QtWidgets.QMenu,
+                            QtWidgets.QToolButton,
+                        ),
+                    ):
+                        break
+                    try:
+                        object_name = str(interactive.objectName() or "")
+                    except Exception:
+                        object_name = ""
+                    if object_name == "tile_controls_container":
+                        break
+                    interactive = interactive.parentWidget()
                 return top is self or self.canvas.is_managed_window(top)
 
             # widgetAt가 None인 경우(일부 네이티브 렌더 영역)에는

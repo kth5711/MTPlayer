@@ -3,8 +3,13 @@ from typing import Any, Dict, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from .interaction_ui_state import (
+    UI_VISIBILITY_ALWAYS,
+    UI_VISIBILITY_HIDDEN,
+    compat_ui_visibility_mode_from_payload,
+)
 from .session import rect_from_data, rect_to_data
-from i18n import normalize_ui_language, tr
+from i18n import default_ui_language, normalize_ui_language, tr
 from .state_persistence import load_config_and_restore, load_profile, save_config, save_profile
 
 
@@ -46,16 +51,19 @@ def build_profile_payload(main) -> Dict[str, Any]:
     return {
         "profile_type": "multi_play_profile",
         "version": 1,
-        "language": normalize_ui_language(getattr(main, "ui_language", "ko")),
+        "language": normalize_ui_language(getattr(main, "ui_language", default_ui_language())),
         "window_state": main._window_state_payload(),
         "view_state": {
             "master_volume": int(main.sld_master.value()),
             "border_visible": bool(main.border_action.isChecked()),
-            "compact_mode": bool(main.compact_action.isChecked()),
+            "ui_visibility_mode": main.current_ui_visibility_mode(),
+            "ui_auto_hide_ms": main.current_windowed_ui_auto_hide_ms(),
+            "compact_mode": main.current_ui_visibility_mode() == UI_VISIBILITY_HIDDEN,
             "always_on_top": bool(main.always_on_top_action.isChecked()),
             "layout_mode": main.canvas.layout_mode(),
             "roller_visible_count": main.canvas.roller_visible_count(),
             "roller_speed": main.canvas.roller_speed_px_per_sec(),
+            "roller_direction": main.canvas.roller_direction(),
             "roller_paused": main.canvas.roller_paused(),
             "overlay_global_apply_percent": main.canvas.overlay_global_apply_percent(),
             "keep_detached_focus_mode": bool(main.keep_detached_focus_mode_action.isChecked()),
@@ -96,14 +104,15 @@ def recent_profile_paths(main) -> list[str]:
     if not isinstance(items, list):
         items = []
     out: list[str] = []
-    active_path = _active_profile_path(main)
-    default_path = _default_profile_path(main)
-    for extra in (active_path, default_path):
-        if extra and extra not in out:
-            out.append(extra)
     for item in items:
-        if isinstance(item, str) and item and item not in out:
-            out.append(item)
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if not text:
+            continue
+        normalized = os.path.abspath(text)
+        if normalized not in out:
+            out.append(normalized)
     return out[:10]
 
 
@@ -223,6 +232,9 @@ def refresh_recent_media_menu(main):
         action = menu.addAction(label)
         action.setToolTip(str(entry.get("value", "")))
         action.triggered.connect(lambda _checked=False, e=dict(entry): main.open_recent_media(entry=e))
+    menu.addSeparator()
+    clear_action = menu.addAction(tr(main, "최근 미디어 비우기"))
+    clear_action.triggered.connect(main.clear_recent_media_history)
 
 
 def prune_recent_media(main):
@@ -238,6 +250,34 @@ def prune_recent_media(main):
     if changed:
         main.config["recent_media"] = kept
     main._refresh_recent_media_menu()
+
+
+def replace_recent_media_path(main, old_path: str, new_path: str) -> int:
+    old_norm = os.path.abspath(os.path.normpath(str(old_path or "").strip()))
+    new_norm = os.path.abspath(os.path.normpath(str(new_path or "").strip()))
+    if not old_norm or not new_norm:
+        return 0
+    old_cmp = os.path.normcase(old_norm)
+    changed = 0
+    updated: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in main._recent_media_entries():
+        item = dict(entry)
+        if str(item.get("kind", "path") or "path") == "path":
+            value = os.path.abspath(os.path.normpath(str(item.get("value", "") or "").strip()))
+            if os.path.normcase(value) == old_cmp:
+                item["value"] = new_norm
+                changed += 1
+        key = (str(item.get("kind", "path") or "path"), str(item.get("value", "") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        updated.append(item)
+    if changed <= 0:
+        return 0
+    main.config["recent_media"] = updated[:20]
+    main._refresh_recent_media_menu()
+    return changed
 
 
 def refresh_recent_profiles_menu(main):
@@ -260,6 +300,9 @@ def refresh_recent_profiles_menu(main):
             font.setBold(True)
             action.setFont(font)
         action.triggered.connect(lambda _checked=False, p=path: main.load_profile(path=p))
+    menu.addSeparator()
+    clear_action = menu.addAction(tr(main, "최근 프로필 비우기"))
+    clear_action.triggered.connect(main.clear_recent_profiles_history)
 
 
 def prune_recent_profiles(main):
@@ -273,6 +316,67 @@ def prune_recent_profiles(main):
     if changed:
         main.config["recent_profiles"] = kept
     main._refresh_recent_profiles_menu()
+
+
+def _confirm_recent_history_clear(main, title: str, message: str) -> bool:
+    return (
+        QtWidgets.QMessageBox.question(
+            main,
+            title,
+            message,
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        )
+        == QtWidgets.QMessageBox.StandardButton.Yes
+    )
+
+
+def clear_recent_media_history(main):
+    entries = list(main._recent_media_entries() or [])
+    if not entries:
+        QtWidgets.QMessageBox.information(main, tr(main, "최근 미디어"), tr(main, "최근 미디어가 비어 있습니다."))
+        return False
+    if not _confirm_recent_history_clear(
+        main,
+        tr(main, "최근 미디어 비우기"),
+        tr(main, "최근 미디어 {count}개를 비우시겠습니까?", count=len(entries)),
+    ):
+        return False
+    main.config["recent_media"] = []
+    main._refresh_recent_media_menu()
+    try:
+        main.save_config()
+    except Exception:
+        pass
+    try:
+        main.statusBar().showMessage(tr(main, "최근 미디어 비우기: {count}개", count=len(entries)), 3000)
+    except Exception:
+        pass
+    return True
+
+
+def clear_recent_profiles_history(main):
+    paths = list(main._recent_profile_paths() or [])
+    if not paths:
+        QtWidgets.QMessageBox.information(main, tr(main, "최근 프로필"), tr(main, "최근 프로필이 비어 있습니다."))
+        return False
+    if not _confirm_recent_history_clear(
+        main,
+        tr(main, "최근 프로필 비우기"),
+        tr(main, "최근 프로필 {count}개를 비우시겠습니까?", count=len(paths)),
+    ):
+        return False
+    main.config["recent_profiles"] = []
+    main._refresh_recent_profiles_menu()
+    try:
+        main.save_config()
+    except Exception:
+        pass
+    try:
+        main.statusBar().showMessage(tr(main, "최근 프로필 비우기: {count}개", count=len(paths)), 3000)
+    except Exception:
+        pass
+    return True
 
 
 def _default_profile_path(main) -> str:
@@ -314,14 +418,27 @@ def restore_window_state(main, payload: Any):
 def apply_view_state(main, payload: Any):
     if not isinstance(payload, dict):
         return
+    ui_visibility_mode = compat_ui_visibility_mode_from_payload(
+        payload,
+        fallback=main.current_ui_visibility_mode(),
+    )
     if "master_volume" in payload:
         mv = int(payload.get("master_volume", 100))
         main.sld_master.setValue(mv)
         main.on_master_volume(mv)
     main.border_action.setChecked(bool(payload.get("border_visible", main.border_action.isChecked())))
-    main.compact_action.setChecked(bool(payload.get("compact_mode", main.compact_action.isChecked())))
+    main.set_windowed_ui_auto_hide_ms(
+        payload.get("ui_auto_hide_ms", main.current_windowed_ui_auto_hide_ms()),
+        save=False,
+        announce=False,
+    )
+    with QtCore.QSignalBlocker(main.compact_action):
+        main.compact_action.setChecked(ui_visibility_mode != UI_VISIBILITY_ALWAYS)
     main.always_on_top_action.setChecked(
         bool(payload.get("always_on_top", main.always_on_top_action.isChecked()))
+    )
+    main.set_roller_reversed(
+        str(payload.get("roller_direction", main.canvas.roller_direction()) or "").strip().lower() == "reverse"
     )
     main.set_roller_visible_count(payload.get("roller_visible_count", main.canvas.roller_visible_count()))
     main.set_roller_speed(payload.get("roller_speed", main.canvas.roller_speed_px_per_sec()))
@@ -353,7 +470,7 @@ def apply_view_state(main, payload: Any):
         bool(payload.get("playlist_sort_descending", main._playlist_sort_descending())),
     )
     main.toggle_borders(main.border_action.isChecked())
-    main.toggle_compact_mode(main.compact_action.isChecked())
+    main.set_ui_visibility_mode(ui_visibility_mode, save=False, announce=False)
     main._apply_always_on_top(main.always_on_top_action.isChecked())
 
 
@@ -375,6 +492,9 @@ def restore_session_payload(main, payload: Any):
         entries = []
     spotlight_index = payload.get("spotlight_index", None)
     spotlight_restore_playing_indices = payload.get("spotlight_restore_playing_indices", [])
+    virtual_roller_sources = payload.get("virtual_roller_sources", [])
+    virtual_roller_scroll_index = payload.get("virtual_roller_scroll_index", 0)
+    virtual_roller_saved_states = payload.get("virtual_roller_saved_states", [])
     if not isinstance(spotlight_restore_playing_indices, list):
         spotlight_restore_playing_indices = []
     restore_spotlight = (
@@ -415,8 +535,17 @@ def restore_session_payload(main, payload: Any):
         payload.get("roller_visible_count", main.canvas.roller_visible_count())
     )
     main.set_roller_speed(payload.get("roller_speed", main.canvas.roller_speed_px_per_sec()))
+    main.set_roller_reversed(
+        str(payload.get("roller_direction", main.canvas.roller_direction()) or "").strip().lower() == "reverse"
+    )
     main.canvas.set_layout_mode(payload.get("layout_mode", main.canvas.layout_mode()))
     main.canvas.set_roller_paused(payload.get("roller_paused", main.canvas.roller_paused()))
+    if main.canvas.infinite_roller_active():
+        main.canvas.restore_infinite_roller_saved_states(virtual_roller_saved_states)
+        main.canvas.restore_infinite_roller_sources(
+            virtual_roller_sources,
+            scroll_index=virtual_roller_scroll_index,
+        )
 
 
 def apply_profile_payload(main, payload: Any):

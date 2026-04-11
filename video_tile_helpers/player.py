@@ -23,7 +23,6 @@ from .player_display import (
     rebuild_transform_mode_menu,
     set_display_mode,
     set_transform_mode,
-    set_zoom_percent,
     update_display_mode_button,
     update_transform_mode_button,
 )
@@ -57,7 +56,6 @@ __all__ = [
     "set_media",
     "set_subtitle_track",
     "set_transform_mode",
-    "set_zoom_percent",
     "should_use_hw_accel",
     "stop",
     "toggle_play",

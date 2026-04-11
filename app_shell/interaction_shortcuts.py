@@ -2,7 +2,7 @@ import logging
 import re
 from typing import Dict, List, Optional
 
-from PyQt6 import QtCore, QtGui
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from .shortcut_dialog import ShortcutDialog
 
@@ -90,6 +90,7 @@ def _queued_tile_invoker(method_name: str):
 
 def _bind_control_shortcuts(main, mapping: Dict[str, str]) -> None:
     bind = lambda key_str, func: _bind_dynamic_shortcut(main, key_str, func)
+    bind(mapping.get("전체화면 토글"), main.toggle_fullscreen)
     bind(mapping.get("재생/일시정지"), lambda: main.canvas.toggle_play_controlled())
     bind(
         mapping.get("다음 영상"),
@@ -154,7 +155,24 @@ def rebind_shortcuts(main, mapping: Optional[Dict[str, str]]):
 
 
 def should_bypass_global_key_handling(main) -> bool:
-    return main._focused_text_input_widget() is not None
+    if main._focused_text_input_widget() is not None:
+        return True
+    try:
+        playlist_dock = getattr(main, "playlist_dock", None)
+        bookmark_dock = getattr(main, "bookmark_dock", None)
+        widget = QtWidgets.QApplication.focusWidget()
+        while widget is not None:
+            if widget is playlist_dock or widget is bookmark_dock:
+                return True
+            widget = widget.parentWidget()
+        obj = QtGui.QGuiApplication.focusObject()
+        while isinstance(obj, QtCore.QObject):
+            if obj is playlist_dock or obj is bookmark_dock:
+                return True
+            obj = obj.parent()
+    except RuntimeError:
+        logger.debug("focused aux dock probe failed", exc_info=True)
+    return False
 
 
 def normalize_shortcut_token(main, raw: str) -> str:

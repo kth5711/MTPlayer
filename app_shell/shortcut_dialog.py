@@ -48,6 +48,7 @@ class ShortcutDialog(QtWidgets.QDialog):
         "영상 열기": "O",
         "영상 새 타일로 열기": "Ctrl+O",
         "폴더 열기": "P",
+        "전체화면 토글": "F11",
         "플레이리스트 창 토글": "L",
         "책갈피 창 토글": "B",
         "영상만 보기": "Ctrl+H",

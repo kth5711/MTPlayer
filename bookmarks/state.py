@@ -1,12 +1,15 @@
+import os
 import time
 import uuid
 from typing import Any, Dict, Optional
 
 from .shared import (
     DEFAULT_CATEGORY,
+    bookmark_signature,
     bookmark_matches_path,
     normalize_category,
     normalize_path,
+    normalize_path_or_empty,
     path_signature_fields,
 )
 
@@ -134,6 +137,52 @@ def refresh_bookmark_marks(main):
                 tile.refresh_bookmark_marks(force=True)
         except Exception:
             pass
+
+
+def relink_bookmarks_for_media_path(
+    main,
+    old_path: str,
+    new_path: str,
+    *,
+    old_mtime_ns: int = 0,
+    old_size: int = 0,
+) -> int:
+    old_norm = normalize_path_or_empty(old_path)
+    new_norm = normalize_path_or_empty(new_path)
+    if not old_norm or not new_norm:
+        return 0
+    old_signature = (int(old_mtime_ns or 0), int(old_size or 0))
+    new_signature = path_signature_fields(new_norm)
+    changed = 0
+    for entry in getattr(main, "bookmarks", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        if not _bookmark_path_matches_relink_target(entry, old_norm, old_signature):
+            continue
+        entry["path"] = new_norm
+        entry["video_mtime_ns"] = int(new_signature.get("video_mtime_ns", 0) or 0)
+        entry["video_size"] = int(new_signature.get("video_size", 0) or 0)
+        changed += 1
+    if changed <= 0:
+        return 0
+    from .dock import refresh_bookmark_dock
+
+    refresh_bookmark_dock(main, keep_selection=False)
+    refresh_bookmark_marks(main)
+    return changed
+
+
+def _bookmark_path_matches_relink_target(
+    entry: dict[str, Any],
+    old_norm: str,
+    old_signature: tuple[int, int],
+) -> bool:
+    stored = normalize_path_or_empty(entry.get("path", ""))
+    if stored and os.path.normcase(stored) == os.path.normcase(old_norm):
+        return True
+    if old_signature == (0, 0):
+        return False
+    return bookmark_signature(entry) == old_signature
 
 
 def load_bookmarks(main, payload: Any):

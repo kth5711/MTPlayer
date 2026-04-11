@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from typing import Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
@@ -9,6 +10,7 @@ import vlc
 
 from i18n import tr
 from scene_analysis.core.media import _ffmpeg_frame_to_qimage
+from video_tile_helpers.export_common import guard_joined_export_path
 
 logger = logging.getLogger(__name__)
 SNAPSHOT_REFRESH_MAX_WIDTH = 1920
@@ -16,6 +18,8 @@ MAX_PREVIEW_SURFACE_DIMENSION = 16384
 PREVIEW_ASPECT_LIMIT_FACTOR = 2.2
 PREVIEW_SMALL_FOCUS_SOFTEN_START = 0.18
 PREVIEW_SMALL_FOCUS_SOFTEN_END = 0.08
+LIVE_SNAPSHOT_REFRESH_INTERVAL_MS = 420
+LIVE_SNAPSHOT_MIN_MEDIA_DELTA_MS = 120
 
 
 class FocusReviewFrameWorker(QtCore.QThread):
@@ -382,6 +386,9 @@ class FocusReviewPreviewViewport(QtWidgets.QFrame):
     def video_surface(self) -> QtWidgets.QWidget:
         return self._video_surface
 
+    def set_preview_image(self, image: QtGui.QImage) -> None:
+        _ = image
+
     def set_focus_rect_norm(self, rect: QtCore.QRectF) -> None:
         normalized = _normalized_focus_rect(rect)
         if _rect_close(normalized, self._focus_rect_norm):
@@ -404,6 +411,9 @@ class FocusReviewPreviewViewport(QtWidgets.QFrame):
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         self._update_video_surface_geometry()
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        super().paintEvent(event)
 
     def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent) -> None:
         if event.button() == QtCore.Qt.MouseButton.LeftButton:
@@ -460,6 +470,9 @@ class FocusReviewPreviewHost(QtWidgets.QWidget):
         self._viewport.set_source_frame_size(width, height)
         self._update_viewport_geometry()
 
+    def set_preview_image(self, image: QtGui.QImage) -> None:
+        self._viewport.set_preview_image(image)
+
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         self._update_viewport_geometry()
@@ -475,18 +488,7 @@ class FocusReviewPreviewHost(QtWidgets.QWidget):
         source_h = max(1.0, float(source_size.height()))
         roi_w = max(1.0, source_w * max(0.01, float(focus_rect.width())))
         roi_h = max(1.0, source_h * max(0.01, float(focus_rect.height())))
-        available_aspect = available_rect.width() / max(1.0, available_rect.height())
-        aspect = roi_w / roi_h if roi_h > 1e-6 else available_aspect
-        focus_min_ratio = min(float(focus_rect.width()), float(focus_rect.height()))
-        soften_start = float(PREVIEW_SMALL_FOCUS_SOFTEN_START)
-        soften_end = float(PREVIEW_SMALL_FOCUS_SOFTEN_END)
-        if soften_start > soften_end:
-            soften = (focus_min_ratio - soften_end) / (soften_start - soften_end)
-            soften = max(0.0, min(1.0, soften))
-            aspect = available_aspect + ((aspect - available_aspect) * soften)
-        min_aspect = available_aspect / float(PREVIEW_ASPECT_LIMIT_FACTOR)
-        max_aspect = available_aspect * float(PREVIEW_ASPECT_LIMIT_FACTOR)
-        aspect = max(min_aspect, min(max_aspect, aspect))
+        aspect = roi_w / roi_h if roi_h > 1e-6 else (available_rect.width() / max(1.0, available_rect.height()))
         target_w = available_rect.width()
         target_h = available_rect.height()
         if aspect > 1e-6:
@@ -530,6 +532,9 @@ class FocusReviewPreviewFullscreen(QtWidgets.QDialog):
     def set_source_frame_size(self, width: int, height: int) -> None:
         self._host.set_source_frame_size(width, height)
 
+    def set_preview_image(self, image: QtGui.QImage) -> None:
+        self._host.set_preview_image(image)
+
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
         if event.key() in (int(QtCore.Qt.Key.Key_Escape), int(QtCore.Qt.Key.Key_F11)):
             self.close()
@@ -551,6 +556,10 @@ class FocusReviewWindow(QtWidgets.QDialog):
         self._focus_rect_norm = QtCore.QRectF(getattr(tile, "_focus_review_rect_norm", QtCore.QRectF(0.34, 0.34, 0.32, 0.32)))
         self._drag_pause_requested = False
         self._snapshot_request_token = 0
+        self._last_snapshot_request_at = 0.0
+        self._last_snapshot_request_ms = -1
+        self._last_snapshot_request_path = ""
+        self._last_snapshot_request_transform_mode = ""
         self._initial_snapshot_requested = False
         self._preview_fullscreen_dialog: Optional[FocusReviewPreviewFullscreen] = None
         self._preview_vlc_instance = None
@@ -558,6 +567,7 @@ class FocusReviewWindow(QtWidgets.QDialog):
         self._preview_media_path = ""
         self._preview_transform_mode = ""
         self._preview_last_target = None
+        self._last_export_range_signature = None
         self._fullscreen_preview_vlc_instance = None
         self._fullscreen_preview_player = None
         self._fullscreen_preview_media_path = ""
@@ -584,15 +594,13 @@ class FocusReviewWindow(QtWidgets.QDialog):
         self._clip_button.clicked.connect(self._export_clip_with_range)
         self._fullscreen_button.clicked.connect(self._toggle_preview_fullscreen)
         self._preview_viewport.doubleClicked.connect(self._toggle_preview_fullscreen)
-        self._range_start_now_button.clicked.connect(self._set_export_start_from_current)
-        self._range_end_now_button.clicked.connect(self._set_export_end_from_current)
         self._range_start_edit.editingFinished.connect(self._normalize_export_range_inputs)
         self._range_end_edit.editingFinished.connect(self._normalize_export_range_inputs)
         try:
             tile.destroyed.connect(self.close)
         except Exception:
             logger.debug("focus review tile destroy hookup skipped", exc_info=True)
-        self._sync_export_range_fields()
+        self._sync_export_range_fields(force=True)
         self.refresh_snapshot_from_tile()
         self._tick_follow_preview()
         self._follow_timer.start()
@@ -667,15 +675,11 @@ class FocusReviewWindow(QtWidgets.QDialog):
         self._range_start_edit = QtWidgets.QLineEdit(self)
         self._range_start_edit.setMinimumWidth(112)
         range_row.addWidget(self._range_start_edit)
-        self._range_start_now_button = QtWidgets.QPushButton(tr(self, "현재 -> 시작"), self)
-        range_row.addWidget(self._range_start_now_button)
         range_row.addWidget(QtWidgets.QLabel("~", self))
         range_row.addWidget(QtWidgets.QLabel(tr(self, "끝"), self))
         self._range_end_edit = QtWidgets.QLineEdit(self)
         self._range_end_edit.setMinimumWidth(112)
         range_row.addWidget(self._range_end_edit)
-        self._range_end_now_button = QtWidgets.QPushButton(tr(self, "현재 -> 끝"), self)
-        range_row.addWidget(self._range_end_now_button)
         range_row.addStretch(1)
         root.addLayout(range_row)
 
@@ -753,6 +757,10 @@ class FocusReviewWindow(QtWidgets.QDialog):
             return
         self._snapshot_request_token += 1
         token = self._snapshot_request_token
+        self._last_snapshot_request_at = time.monotonic()
+        self._last_snapshot_request_ms = max(0, int(ms))
+        self._last_snapshot_request_path = str(path or "")
+        self._last_snapshot_request_transform_mode = str(getattr(self._tile, "transform_mode", "none") or "none")
         self._frame_worker.request_frame(
             {
                 "path": path,
@@ -777,6 +785,33 @@ class FocusReviewWindow(QtWidgets.QDialog):
         self._status_label.setText(tr(self, "원본 프레임 고정됨"))
         self._update_preview_from_image(self._snapshot_image)
 
+    def _maybe_refresh_snapshot_from_source(self, source: dict) -> None:
+        path = str(source.get("path") or "")
+        current_ms = max(0, int(source.get("ms", 0) or 0))
+        transform_mode = str(source.get("transform_mode", "none") or "none")
+        if self._snapshot_image.isNull():
+            self._request_snapshot_frame(path, current_ms)
+            return
+        force_refresh = (
+            path != self._last_snapshot_request_path
+            or transform_mode != self._last_snapshot_request_transform_mode
+        )
+        if force_refresh:
+            self._request_snapshot_frame(path, current_ms)
+            return
+        try:
+            playing = bool(self._tile.mediaplayer.is_playing())
+        except Exception:
+            playing = False
+        moved_ms = abs(current_ms - int(self._last_snapshot_request_ms))
+        if not playing:
+            if moved_ms >= LIVE_SNAPSHOT_MIN_MEDIA_DELTA_MS:
+                self._request_snapshot_frame(path, current_ms)
+            return
+        elapsed_ms = (time.monotonic() - float(self._last_snapshot_request_at or 0.0)) * 1000.0
+        if elapsed_ms >= float(LIVE_SNAPSHOT_REFRESH_INTERVAL_MS) and moved_ms >= int(LIVE_SNAPSHOT_MIN_MEDIA_DELTA_MS):
+            self._request_snapshot_frame(path, current_ms)
+
     def _tick_follow_preview(self) -> None:
         if self._minimap._dragging:
             return
@@ -788,6 +823,8 @@ class FocusReviewWindow(QtWidgets.QDialog):
             self._release_fullscreen_preview_player()
             return
         self._time_label.setText(_format_ms_clock(int(source["ms"])))
+        self._sync_export_range_fields()
+        self._maybe_refresh_snapshot_from_source(source)
         self._sync_preview_player(source)
         self._sync_fullscreen_preview_player(source)
 
@@ -846,15 +883,6 @@ class FocusReviewWindow(QtWidgets.QDialog):
         if self._snapshot_image.isNull():
             return QtGui.QImage()
         return _crop_focus_region(self._snapshot_image, self._focus_rect_norm)
-
-    def _dialog_start_dir(self) -> str:
-        mainwin = getattr(self._tile, "_main_window", lambda: None)()
-        if mainwin is not None:
-            try:
-                return mainwin.config.get("last_dir", "") or os.path.expanduser("~")
-            except Exception:
-                logger.debug("focus review dialog start dir lookup skipped", exc_info=True)
-        return os.path.expanduser("~")
 
     def _remember_dialog_dir(self, path: str) -> None:
         if not path:
@@ -933,7 +961,22 @@ class FocusReviewWindow(QtWidgets.QDialog):
         end_ms = max(start_ms + 1, int(round(end_pos * float(length_ms))))
         return start_ms, end_ms
 
-    def _sync_export_range_fields(self) -> None:
+    def _export_range_signature(self):
+        pos_a = getattr(self._tile, "posA", None)
+        pos_b = getattr(self._tile, "posB", None)
+        loop_enabled = bool(getattr(self._tile, "loop_enabled", False))
+        if pos_a is None or pos_b is None:
+            return (None, None, loop_enabled)
+        try:
+            return (round(float(pos_a), 6), round(float(pos_b), 6), loop_enabled)
+        except Exception:
+            return (None, None, loop_enabled)
+
+    def _sync_export_range_fields(self, *, force: bool = False) -> None:
+        signature = self._export_range_signature()
+        if (not force) and signature == self._last_export_range_signature:
+            return
+        self._last_export_range_signature = signature
         start_ms, end_ms = self._tile_ab_range_ms() or self._default_export_range_ms()
         self._set_export_range_fields(start_ms, end_ms)
 
@@ -945,7 +988,7 @@ class FocusReviewWindow(QtWidgets.QDialog):
         clip_range = self._export_range_ms_from_fields(show_error=False)
         if clip_range is None:
             return
-        self._set_export_range_fields(clip_range[0], clip_range[1])
+        self._apply_export_range_to_tile(clip_range[0], clip_range[1], show_error=False)
 
     def _export_range_ms_from_fields(self, *, show_error: bool) -> Optional[tuple[int, int]]:
         try:
@@ -969,46 +1012,14 @@ class FocusReviewWindow(QtWidgets.QDialog):
             return None
         return start_ms, end_ms
 
-    def _set_export_start_from_current(self) -> None:
-        source = self._current_source_info()
-        if source is None:
-            return
-        start_ms = max(0, int(source.get("ms", 0) or 0))
-        existing = self._export_range_ms_from_fields(show_error=False) or self._default_export_range_ms()
-        end_ms = max(existing[1], start_ms + 1)
-        length_ms = self._current_media_length_ms()
-        if length_ms > 0:
-            start_ms = min(start_ms, max(0, length_ms - 1))
-            end_ms = min(length_ms, max(end_ms, start_ms + 1))
-            if end_ms <= start_ms:
-                end_ms = min(length_ms, start_ms + 1000)
+    def _apply_export_range_to_tile(self, start_ms: int, end_ms: int, *, show_error: bool) -> bool:
         self._set_export_range_fields(start_ms, end_ms)
-
-    def _set_export_end_from_current(self) -> None:
-        source = self._current_source_info()
-        if source is None:
-            return
-        end_ms = max(0, int(source.get("ms", 0) or 0))
-        existing = self._export_range_ms_from_fields(show_error=False) or self._default_export_range_ms()
-        start_ms = min(existing[0], max(0, end_ms - 1))
-        if end_ms <= start_ms:
-            start_ms = max(0, end_ms - 1000)
-        length_ms = self._current_media_length_ms()
-        if length_ms > 0:
-            end_ms = min(end_ms, length_ms)
-        if end_ms <= start_ms:
-            end_ms = start_ms + 1000
-        self._set_export_range_fields(start_ms, end_ms)
-
-    def _restore_tile_ab_state(self, previous_state: tuple[object, object, bool]) -> None:
-        prev_pos_a, prev_pos_b, prev_loop_enabled = previous_state
-        self._tile.posA = prev_pos_a
-        self._tile.posB = prev_pos_b
-        self._tile.loop_enabled = bool(prev_loop_enabled) and prev_pos_a is not None and prev_pos_b is not None
-        try:
-            self._tile._update_ab_controls()
-        except Exception:
-            logger.debug("focus review A/B restore controls skipped", exc_info=True)
+        if bool(self._tile.set_ab_range_ms(int(start_ms), int(end_ms), seek_to_start=False)):
+            self._last_export_range_signature = self._export_range_signature()
+            return True
+        if show_error:
+            QtWidgets.QMessageBox.warning(self, tr(self, "구간 설정"), tr(self, "구간을 A/B로 적용하지 못했습니다."))
+        return False
 
     def _run_export_with_range(self, export_action) -> None:
         source = self._current_source_info()
@@ -1018,15 +1029,9 @@ class FocusReviewWindow(QtWidgets.QDialog):
         clip_range = self._export_range_ms_from_fields(show_error=True)
         if clip_range is None:
             return
-        self._set_export_range_fields(clip_range[0], clip_range[1])
-        previous_state = (getattr(self._tile, "posA", None), getattr(self._tile, "posB", None), bool(getattr(self._tile, "loop_enabled", False)))
-        try:
-            if not bool(self._tile.set_ab_range_ms(int(clip_range[0]), int(clip_range[1]), seek_to_start=False)):
-                QtWidgets.QMessageBox.warning(self, tr(self, "구간 설정"), tr(self, "구간을 A/B로 적용하지 못했습니다."))
-                return
-            export_action()
-        finally:
-            self._restore_tile_ab_state(previous_state)
+        if not self._apply_export_range_to_tile(clip_range[0], clip_range[1], show_error=True):
+            return
+        export_action()
 
     def _export_gif_with_range(self) -> None:
         self._run_export_with_range(self._tile.export_gif)
@@ -1040,23 +1045,20 @@ class FocusReviewWindow(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(self, tr(self, "포커스 검토"), tr(self, "저장할 확대 보기가 없습니다."))
             return
         source = self._current_source_info() or {}
-        default_name = _default_review_filename(str(source.get("path") or ""), int(source.get("ms", 0) or 0))
-        default_path = os.path.join(self._dialog_start_dir(), default_name)
-        path, selected_filter = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            tr(self, "확대 보기 저장"),
-            default_path,
-            tr(self, "이미지 파일 (*.png *.jpg *.jpeg)"),
+        source_path = str(source.get("path") or "")
+        source_ms = int(source.get("ms", 0) or 0)
+        out_path = _default_review_output_path(
+            source_path,
+            source_ms,
+            fallback_prefix="focus_review",
         )
-        if not path:
-            return
-        path = _ensure_image_extension(path, selected_filter)
-        fmt = _image_format_for_path(path)
-        if not bool(crop.save(path, fmt)):
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        fmt = _image_format_for_path(out_path)
+        if not bool(crop.save(out_path, fmt)):
             QtWidgets.QMessageBox.warning(self, tr(self, "포커스 검토"), tr(self, "확대 보기 저장에 실패했습니다."))
             return
-        self._remember_dialog_dir(path)
-        self._status_label.setText(tr(self, "확대 보기 저장: {path}", path=path))
+        self._remember_dialog_dir(out_path)
+        self._status_label.setText(tr(self, "확대 보기 저장: {path}", path=out_path))
 
     def _extract_save_crop(self) -> QtGui.QImage:
         source = self._current_source_info()
@@ -1411,10 +1413,9 @@ class FocusReviewWindow(QtWidgets.QDialog):
         if not path:
             self._release_fullscreen_preview_player()
             return
-        transform_mode = str(source.get("transform_mode", "none") or "none")
         self._sync_fullscreen_preview()
         source_size = self._preview_source_size()
-        player = self._ensure_fullscreen_preview_player(transform_mode)
+        player = self._ensure_fullscreen_preview_player(str(source.get("transform_mode", "none") or "none"))
         if player is None:
             return
         self._bind_fullscreen_preview_target()
@@ -1422,6 +1423,7 @@ class FocusReviewWindow(QtWidgets.QDialog):
             source_playing = bool(self._tile.mediaplayer.is_playing())
         except Exception:
             source_playing = False
+        transform_mode = str(source.get("transform_mode", "none") or "none")
         if self._fullscreen_preview_media_path != path:
             if not self._open_fullscreen_preview_media(path, transform_mode, source_playing=source_playing):
                 return
@@ -1442,6 +1444,7 @@ class FocusReviewWindow(QtWidgets.QDialog):
             preview_playing = bool(player.is_playing())
         except Exception:
             preview_playing = False
+        dialog.set_source_frame_size(source_size.width(), source_size.height())
         if source_playing:
             if not preview_playing:
                 try:
@@ -1535,6 +1538,16 @@ def _default_review_filename(path: str, ms: int) -> str:
     return f"{base}_focus_{_format_ms_clock(ms).replace(':', '-')}.png"
 
 
+def _default_review_output_path(path: str, ms: int, *, fallback_prefix: str) -> str:
+    base_dir = os.path.dirname(path or "") or os.path.expanduser("~")
+    base_name = os.path.splitext(os.path.basename(path or ""))[0].strip() or str(fallback_prefix or "focus_review")
+    return guard_joined_export_path(
+        base_dir,
+        [f"{base_name}_screenshots", _default_review_filename(path, ms)],
+        fallback_prefix=fallback_prefix,
+    )
+
+
 def _format_timecode_input(ms: int) -> str:
     total_ms = max(0, int(ms))
     total_seconds, millis = divmod(total_ms, 1000)
@@ -1568,16 +1581,6 @@ def _parse_timecode_ms(text: str) -> int:
         raise ValueError("negative")
     total_ms = int(round((hours_value * 3600.0 + minutes_value * 60.0 + seconds_value) * 1000.0))
     return max(0, total_ms)
-
-
-def _ensure_image_extension(path: str, selected_filter: str) -> str:
-    root, ext = os.path.splitext(path)
-    if ext:
-        return path
-    filter_text = str(selected_filter or "").lower()
-    if "jpg" in filter_text or "jpeg" in filter_text:
-        return root + ".jpg"
-    return root + ".png"
 
 
 def _image_format_for_path(path: str) -> str:

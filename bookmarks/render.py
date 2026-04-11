@@ -128,12 +128,13 @@ def _file_item(main, categories, files, category: str, path: str, expanded_keys:
 
 def _bookmark_leaf(entry, path: str, category: str):
     time_label = format_range_ms(int(entry.get("position_ms", 0)), bookmark_end_ms(entry))
-    leaf = bookmark_tree_item(time_label, path)
+    leaf = bookmark_tree_item(time_label, "")
     leaf.setData(0, NODE_TYPE_ROLE, "bookmark")
     leaf.setData(0, NODE_KEY_ROLE, f"bookmark:{entry.get('id', '')}")
     leaf.setData(0, BOOKMARK_ROLE, str(entry.get("id", "")))
     leaf.setData(0, NODE_PATH_ROLE, path)
     leaf.setData(0, NODE_CATEGORY_ROLE, category)
+    leaf.setToolTip(0, path)
     leaf.setToolTip(1, path)
     return leaf
 

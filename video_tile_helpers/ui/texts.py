@@ -23,6 +23,8 @@ def refresh_video_tile_ui_texts(tile: "VideoTile"):
 def _refresh_labels(tile: "VideoTile", has_media: bool):
     if not has_media and hasattr(tile, "title"):
         tile.title.setText(tr(tile, "(열기)"))
+        if hasattr(tile, "_fit_open_title_hitbox"):
+            tile._fit_open_title_hitbox()
     if hasattr(tile, "title"):
         tooltip = tile.title.toolTip() or ""
         if not has_media:
@@ -40,11 +42,16 @@ def _refresh_labels(tile: "VideoTile", has_media: bool):
 def _refresh_actions(tile: "VideoTile"):
     _set_dynamic_tooltip(tile, "btn_scenes", scene_analysis_button_tooltip(tile))
     _set_tooltip(tile, "btn_bookmark", "현재 위치를 북마크에 추가")
+    _set_tooltip(tile, "btn_export_menu", "내보내기 메뉴")
     _set_tooltip(tile, "btn_close", "현재 프레임 스크린샷 저장")
     _set_tooltip(tile, "btn_frameset", "현재 구간 프레임셋 저장")
     _set_tooltip(tile, "sld_vol", "이 타일의 볼륨 (0~120)")
-    _set_tooltip(tile, "btn_volume_toggle", "볼륨 조절바 열기/닫기")
+    _set_tooltip(tile, "btn_volume_toggle", "클릭: 음소거, 좌우 드래그: 볼륨 조절")
     _set_tooltip(tile, "btn_repeat_mode", "클릭할 때마다 반복 안 함 -> 현재 영상 1개 반복 -> 플레이리스트 반복으로 변경")
+    _set_action_text(tile, "action_export_gif", "GIF")
+    _set_action_text(tile, "action_export_clip", "Clip")
+    _set_action_text(tile, "action_export_screenshot", "스크린샷")
+    _set_action_text(tile, "action_export_frameset", "프레임셋")
     if hasattr(tile, "action_mute_selected"):
         tile.action_mute_selected.setText(tr(tile, "선택 타일 음소거/해제"))
 
@@ -90,8 +97,10 @@ def _refresh_volume_toggle_icon(tile: "VideoTile"):
     if button is None:
         return
     button.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
-    button.setFixedSize(24, 24)
-    button.setIconSize(QtCore.QSize(20, 20))
+    button.setFixedSize(30, 24)
+    button.setIconSize(QtCore.QSize(16, 16))
+    button.setContentsMargins(0, 0, 0, 0)
+    button.setStyleSheet("QToolButton { padding: 4px 0 0 0; }")
     icon = tile.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MediaVolume)
     if icon.isNull():
         button.setIcon(QtGui.QIcon())
@@ -151,3 +160,9 @@ def _set_dynamic_tooltip(tile: "VideoTile", name: str, text: str):
     widget = getattr(tile, name, None)
     if widget is not None:
         widget.setToolTip(str(text or ""))
+
+
+def _set_action_text(tile: "VideoTile", name: str, text: str):
+    action = getattr(tile, name, None)
+    if action is not None:
+        action.setText(tr(tile, text))

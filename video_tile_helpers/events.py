@@ -12,6 +12,9 @@ def event_filter(tile: "VideoTile", obj, event) -> Optional[bool]:
     slider = getattr(tile, "sld_pos", None)
     if slider is not None and obj is slider:
         return _handle_seek_slider_event(tile, slider, event)
+    volume_button = getattr(tile, "btn_volume_toggle", None)
+    if volume_button is not None and obj is volume_button:
+        return _handle_volume_button_event(tile, volume_button, event)
     if obj is tile.title and event.type() == QtCore.QEvent.Type.Wheel:
         return handle_volume_wheel_event(tile, event)
     return None
@@ -137,6 +140,92 @@ def handle_volume_wheel_event(tile: "VideoTile", event: QtGui.QWheelEvent) -> bo
     tile.adjust_volume_step(1 if delta_y > 0 else -1)
     _accept_event(event)
     return True
+
+
+def _handle_volume_button_event(tile: "VideoTile", button, event) -> bool:
+    event_type = event.type()
+    if event_type == QtCore.QEvent.Type.MouseButtonPress:
+        return _handle_volume_button_press(tile, button, event)
+    if event_type == QtCore.QEvent.Type.MouseMove:
+        return _handle_volume_button_move(tile, button, event)
+    if event_type == QtCore.QEvent.Type.MouseButtonRelease:
+        return _handle_volume_button_release(tile, button, event)
+    if event_type == QtCore.QEvent.Type.Leave:
+        return _handle_volume_button_leave(tile)
+    return False
+
+
+def _handle_volume_button_press(tile: "VideoTile", button, event) -> bool:
+    if event.button() != QtCore.Qt.MouseButton.LeftButton:
+        return False
+    tile._volume_button_pressing = True
+    tile._volume_button_drag_active = False
+    try:
+        tile._volume_button_press_global_x = float(event.globalPosition().x())
+    except Exception:
+        tile._volume_button_press_global_x = float(button.mapToGlobal(event.pos()).x())
+    tile._volume_button_drag_start_volume = int(getattr(tile, "tile_volume", 120))
+    try:
+        button.grabMouse()
+    except Exception:
+        pass
+    _accept_event(event)
+    return True
+
+
+def _handle_volume_button_move(tile: "VideoTile", button, event) -> bool:
+    if not bool(getattr(tile, "_volume_button_pressing", False)):
+        return False
+    try:
+        current_x = float(event.globalPosition().x())
+    except Exception:
+        current_x = float(button.mapToGlobal(event.pos()).x())
+    delta_x = current_x - float(getattr(tile, "_volume_button_press_global_x", 0.0))
+    if not bool(getattr(tile, "_volume_button_drag_active", False)) and abs(delta_x) >= 6.0:
+        tile._volume_button_drag_active = True
+    if not bool(getattr(tile, "_volume_button_drag_active", False)):
+        _accept_event(event)
+        return True
+    step_delta = int(round(delta_x / 4.0)) * 5
+    new_volume = max(
+        0,
+        min(120, int(getattr(tile, "_volume_button_drag_start_volume", getattr(tile, "tile_volume", 120))) + step_delta),
+    )
+    if bool(getattr(tile, "tile_muted", False)):
+        tile.set_tile_muted(False)
+    tile.on_volume(new_volume)
+    tile._show_volume_overlay()
+    _accept_event(event)
+    return True
+
+
+def _handle_volume_button_release(tile: "VideoTile", button, event) -> bool:
+    if event.button() != QtCore.Qt.MouseButton.LeftButton:
+        return False
+    was_pressing = bool(getattr(tile, "_volume_button_pressing", False))
+    was_dragging = bool(getattr(tile, "_volume_button_drag_active", False))
+    _reset_volume_button_gesture(tile, button)
+    if not was_pressing:
+        return False
+    if not was_dragging:
+        tile.toggle_tile_mute()
+    _accept_event(event)
+    return True
+
+
+def _handle_volume_button_leave(tile: "VideoTile") -> bool:
+    if bool(getattr(tile, "_volume_button_pressing", False)):
+        return True
+    return False
+
+
+def _reset_volume_button_gesture(tile: "VideoTile", button) -> None:
+    tile._volume_button_pressing = False
+    tile._volume_button_drag_active = False
+    try:
+        button.releaseMouse()
+    except Exception:
+        pass
 
 
 def _toggle_tile_selection(tile: "VideoTile"):

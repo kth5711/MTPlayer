@@ -3,6 +3,10 @@ import os
 from PyQt6 import QtWidgets
 
 from i18n import tr
+from .media_path_actions import (
+    move_current_media_from_context as move_current_media_from_context_impl,
+    rename_current_media_from_context as rename_current_media_from_context_impl,
+)
 
 
 def fit_media_size_from_context(tile):
@@ -154,6 +158,60 @@ def sync_other_tiles_to_this_timecode(tile):
         show_overlay(tr(tile, "전체 동기화: {count}개", count=synced), timeout_ms=1400)
 
 
+def sync_other_tiles_to_this_progress(tile):
+    if not _tile_has_seekable_media(tile):
+        QtWidgets.QMessageBox.information(
+            tile,
+            tr(tile, "이 타일 기준 진행률 동기화 (%)"),
+            tr(tile, "먼저 이 타일에 재생 중인 미디어를 열어 주세요."),
+        )
+        return
+    progress = _tile_playback_progress(tile)
+    if progress is None:
+        QtWidgets.QMessageBox.information(
+            tile,
+            tr(tile, "이 타일 기준 진행률 동기화 (%)"),
+            tr(tile, "현재 미디어 길이를 아직 확인하지 못했습니다."),
+        )
+        return
+    canvas = tile._canvas_host()
+    if canvas is None:
+        return
+    try:
+        source_playing = bool(tile.mediaplayer.is_playing())
+    except Exception:
+        source_playing = False
+    source_rate = float(getattr(tile, "playback_rate", 1.0) or 1.0)
+    synced = 0
+    for other in list(getattr(canvas, "tiles", []) or []):
+        if other is tile or not _tile_has_seekable_media(other):
+            continue
+        target_length_ms = _tile_media_length_ms(other)
+        if target_length_ms <= 0:
+            continue
+        target_ms = int(round(progress * float(target_length_ms)))
+        target_ms = max(0, min(max(0, target_length_ms - 1), target_ms))
+        _apply_tile_playback_rate(other, source_rate)
+        try:
+            other.seek_ms(target_ms, play=source_playing, show_overlay=False)
+            synced += 1
+        except Exception:
+            continue
+    if synced <= 0:
+        QtWidgets.QMessageBox.information(
+            tile,
+            tr(tile, "이 타일 기준 진행률 동기화 (%)"),
+            tr(tile, "진행률 동기화할 다른 미디어 타일이 없습니다."),
+        )
+        return
+    show_overlay = getattr(tile, "_show_status_overlay", None)
+    if callable(show_overlay):
+        show_overlay(
+            tr(tile, "진행률 동기화: {count}개 ({percent:.1f}%)", count=synced, percent=progress * 100.0),
+            timeout_ms=1600,
+        )
+
+
 def open_focus_review_from_context(tile):
     if not _tile_has_local_video_file(tile):
         QtWidgets.QMessageBox.information(
@@ -182,6 +240,14 @@ def open_focus_review_from_context(tile):
     window.activateWindow()
 
 
+def rename_current_media_from_context(tile):
+    return rename_current_media_from_context_impl(tile)
+
+
+def move_current_media_from_context(tile):
+    return move_current_media_from_context_impl(tile)
+
+
 def _tile_has_seekable_media(tile) -> bool:
     if bool(getattr(tile, "is_static_image", lambda: False)()):
         return False
@@ -201,6 +267,30 @@ def _tile_has_local_video_file(tile) -> bool:
     except Exception:
         return False
     return bool(path) and os.path.isfile(path)
+
+
+def _tile_media_length_ms(tile) -> int:
+    try:
+        return int(tile.mediaplayer.get_length() or 0)
+    except Exception:
+        return 0
+
+
+def _tile_playback_progress(tile):
+    try:
+        position = float(tile.mediaplayer.get_position())
+    except Exception:
+        position = -1.0
+    if 0.0 <= position <= 1.0:
+        return position
+    length_ms = _tile_media_length_ms(tile)
+    if length_ms <= 0:
+        return None
+    try:
+        current_ms = int(tile.current_playback_ms())
+    except Exception:
+        current_ms = 0
+    return max(0.0, min(1.0, float(current_ms) / float(length_ms)))
 
 
 def _format_timecode_input(ms: int) -> str:

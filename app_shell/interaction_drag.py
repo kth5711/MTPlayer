@@ -6,6 +6,32 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 logger = logging.getLogger(__name__)
 
 
+def _dock_contains_global_point(dock: QtWidgets.QDockWidget, gp: QtCore.QPoint) -> bool:
+    try:
+        if dock is None or not dock.isVisible():
+            return False
+        rect = dock.rect()
+        global_rect = QtCore.QRect(dock.mapToGlobal(rect.topLeft()), dock.mapToGlobal(rect.bottomRight()))
+        return global_rect.contains(gp)
+    except RuntimeError:
+        logger.debug("aux dock global hit-test failed", exc_info=True)
+        return False
+
+
+def _belongs_to_aux_dock(main, obj, gp: Optional[QtCore.QPoint] = None) -> bool:
+    widget = obj if isinstance(obj, QtWidgets.QWidget) else None
+    playlist_dock = getattr(main, "playlist_dock", None)
+    bookmark_dock = getattr(main, "bookmark_dock", None)
+    while widget is not None:
+        if widget is playlist_dock or widget is bookmark_dock:
+            return True
+        widget = widget.parentWidget()
+    if gp is not None:
+        if _dock_contains_global_point(playlist_dock, gp) or _dock_contains_global_point(bookmark_dock, gp):
+            return True
+    return False
+
+
 def tile_from_event_source(main, obj, gp: Optional[QtCore.QPoint] = None):
     tiles = set(getattr(main.canvas, "tiles", []))
     widget = obj if isinstance(obj, QtWidgets.QWidget) else None
@@ -261,17 +287,23 @@ def handle_main_mouse_press(main, obj, event: QtGui.QMouseEvent) -> bool:
         if event.button() != QtCore.Qt.MouseButton.LeftButton:
             return False
         gp = event.globalPosition().toPoint()
+        if _belongs_to_aux_dock(main, obj, gp):
+            return False
         source_window = obj.window() if isinstance(obj, QtWidgets.QWidget) else None
         if main._should_bypass_global_mouse_handling(gp, source_window=source_window):
             return False
         tile = main._tile_from_event_source(obj, gp)
-        if (event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier) and tile is not None:
+        mods = event.modifiers() | QtWidgets.QApplication.keyboardModifiers()
+        if (mods & QtCore.Qt.KeyboardModifier.ControlModifier) and tile is not None:
+            _toggle_tile_multi_selection(main, tile)
+            return True
+        if (mods & QtCore.Qt.KeyboardModifier.ShiftModifier) and tile is not None:
             main._start_tile_drag_candidate(tile, gp)
             return True
         if main._is_main_window_click_source(obj, gp):
             main._select_by_global_point(
                 gp,
-                event.modifiers(),
+                mods,
                 toggle_single_off=False,
                 source_window=source_window,
             )
@@ -279,3 +311,12 @@ def handle_main_mouse_press(main, obj, event: QtGui.QMouseEvent) -> bool:
         logger.warning("main mouse-press handling failed", exc_info=True)
         return False
     return False
+
+
+def _toggle_tile_multi_selection(main, tile) -> None:
+    selected_now = bool(getattr(tile, "is_selected", False))
+    tile.set_selection("off" if selected_now else "normal")
+    try:
+        main._last_sel_idx = list(getattr(main.canvas, "tiles", [])).index(tile)
+    except Exception:
+        pass

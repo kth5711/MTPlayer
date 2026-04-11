@@ -215,3 +215,10 @@ def toggle_playlist_visibility(main, checked: Optional[bool] = None):
     main.playlist_dock.setVisible(visible)
     if visible:
         main.request_playlist_refresh(force=True)
+    canvas = getattr(main, "canvas", None)
+    refresher = getattr(canvas, "refresh_tile_surfaces", None)
+    if callable(refresher):
+        try:
+            refresher(getattr(canvas, "docked_tiles", lambda: [])())
+        except Exception:
+            pass

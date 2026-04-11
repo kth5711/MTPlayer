@@ -2,6 +2,7 @@
 
 import logging
 import math
+import os
 from typing import Any, Dict, List, Optional
 from PyQt6 import QtCore, QtGui, QtWidgets
 from canvas_support import DetachedTileWindow
@@ -25,6 +26,7 @@ from canvas_support.overlay_sync import (
     sync_overlay_group_window_mode as sync_overlay_group_window_mode_impl,
 )
 from app_shell.session import rect_from_data, rect_to_data
+from video_tile_helpers.playlist_bookmarks import remove_playlist_entry_start_positions
 from video_tile import VideoTile
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,12 @@ class Canvas(QtWidgets.QWidget):
     LAYOUT_COLUMN = "column"
     LAYOUT_ROLLER_ROW = "roller_row"
     LAYOUT_ROLLER_COLUMN = "roller_column"
+    LAYOUT_INFINITE_ROLLER_ROW = "infinite_roller_row"
+    LAYOUT_INFINITE_ROLLER_COLUMN = "infinite_roller_column"
+    ROLLER_AXIS_HORIZONTAL = "horizontal"
+    ROLLER_AXIS_VERTICAL = "vertical"
+    ROLLER_DIRECTION_FORWARD = "forward"
+    ROLLER_DIRECTION_REVERSE = "reverse"
     DEFAULT_ROLLER_VISIBLE_COUNT = 3
     DEFAULT_ROLLER_SPEED_PX_PER_SEC = 90
     DEFAULT_OVERLAY_GLOBAL_APPLY_PERCENT = 10
@@ -50,8 +58,14 @@ class Canvas(QtWidgets.QWidget):
         LAYOUT_TALL: "세로 우선",
         LAYOUT_ROW: "한 줄",
         LAYOUT_COLUMN: "한 열",
-        LAYOUT_ROLLER_ROW: "가로 롤러",
-        LAYOUT_ROLLER_COLUMN: "세로 롤러",
+        LAYOUT_ROLLER_ROW: "롤러",
+        LAYOUT_ROLLER_COLUMN: "롤러",
+        LAYOUT_INFINITE_ROLLER_ROW: "영상변경롤러",
+        LAYOUT_INFINITE_ROLLER_COLUMN: "영상변경롤러",
+    }
+    ROLLER_AXIS_LABELS = {
+        ROLLER_AXIS_HORIZONTAL: "가로",
+        ROLLER_AXIS_VERTICAL: "세로",
     }
 
     # ================== 🟢 핵심 변경 2: vlc_instance를 인자로 받도록 수정 ==================
@@ -71,11 +85,16 @@ class Canvas(QtWidgets.QWidget):
         self._roller_visible_count = self.DEFAULT_ROLLER_VISIBLE_COUNT
         self._overlay_global_apply_percent = self.DEFAULT_OVERLAY_GLOBAL_APPLY_PERCENT
         self._roller_paused = False
+        self._roller_direction = self.ROLLER_DIRECTION_FORWARD
         self._roller_playback_active = False
         self._roller_last_visible_tiles: set[VideoTile] = set()
         self._roller_offset_px = 0.0
         self._roller_px_per_sec = float(self.DEFAULT_ROLLER_SPEED_PX_PER_SEC)
         self._roller_last_tick_ms = 0
+        self._virtual_roller_sources: List[Dict[str, str]] = []
+        self._virtual_roller_scroll_index = 0
+        self._virtual_roller_saved_states: Dict[str, Dict[str, Any]] = {}
+        self._virtual_roller_pool_updating = False
         self._roller_timer = QtCore.QTimer(self)
         self._roller_timer.setInterval(30)
         self._roller_timer.timeout.connect(self._advance_roller)
@@ -83,6 +102,8 @@ class Canvas(QtWidgets.QWidget):
 
     @classmethod
     def normalize_layout_mode(cls, mode: Optional[str]) -> str:
+        if mode in {cls.LAYOUT_WIDE, cls.LAYOUT_TALL}:
+            return cls.LAYOUT_AUTO
         if isinstance(mode, str) and mode in cls.LAYOUT_LABELS:
             return mode
         return cls.LAYOUT_AUTO
@@ -131,12 +152,28 @@ class Canvas(QtWidgets.QWidget):
     def roller_paused(self) -> bool:
         return bool(self._roller_paused)
 
+    @classmethod
+    def normalize_roller_direction(cls, value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if text == cls.ROLLER_DIRECTION_REVERSE:
+            return cls.ROLLER_DIRECTION_REVERSE
+        return cls.ROLLER_DIRECTION_FORWARD
+
+    def roller_direction(self) -> str:
+        return self.normalize_roller_direction(self._roller_direction)
+
+    def roller_direction_sign(self) -> int:
+        return -1 if self.roller_direction() == self.ROLLER_DIRECTION_REVERSE else 1
+
     def set_layout_mode(self, mode: Optional[str]):
         previous_roller_mode = self._roller_mode()
+        previous_virtual_mode = self._virtual_roller_mode(previous_roller_mode)
         normalized = self.normalize_layout_mode(mode)
         if normalized == self._layout_mode:
             return
-        next_roller_mode = normalized if normalized in {self.LAYOUT_ROLLER_ROW, self.LAYOUT_ROLLER_COLUMN} else None
+        next_roller_mode = normalized if normalized in self._roller_layout_modes() else None
+        next_virtual_mode = self._virtual_roller_mode(normalized)
+        leaving_virtual_mode = previous_virtual_mode is not None and next_virtual_mode is None
         resume_tiles: List[VideoTile] = []
         if previous_roller_mode is None and next_roller_mode is not None:
             if not self._roller_restore_snapshot_seeded:
@@ -150,9 +187,22 @@ class Canvas(QtWidgets.QWidget):
             self._roller_restore_snapshot_seeded = False
             self._roller_playback_active = False
             self._roller_last_visible_tiles = set()
+        if previous_virtual_mode is None and next_virtual_mode is not None:
+            if self.detached_windows and not self._keep_detached_tiles_for_focus_modes():
+                self.redock_all_detached()
+            self._virtual_roller_sources = self._collect_virtual_roller_sources()
+            self._virtual_roller_scroll_index = 0
         self._layout_mode = normalized
         self._roller_offset_px = 0.0
         self._roller_last_tick_ms = 0
+        if leaving_virtual_mode:
+            self._expand_virtual_roller_sources_to_tiles()
+            self._virtual_roller_sources = []
+            self._virtual_roller_scroll_index = 0
+        if next_virtual_mode is not None:
+            self._configure_virtual_roller_tiles()
+        elif next_roller_mode is not None:
+            self._ensure_roller_entry_tiles(next_roller_mode)
         self.relayout()
         if resume_tiles:
             QtCore.QTimer.singleShot(0, lambda tiles=resume_tiles: self._restore_roller_tiles(tiles))
@@ -164,6 +214,10 @@ class Canvas(QtWidgets.QWidget):
         self._roller_visible_count = normalized
         self._roller_offset_px = 0.0
         self._roller_last_tick_ms = 0
+        if self._virtual_roller_mode() is not None:
+            self._configure_virtual_roller_tiles()
+        elif self._roller_mode() is not None:
+            self._ensure_roller_entry_tiles(self._roller_mode())
         self.relayout()
 
     def set_roller_speed(self, value: Any):
@@ -199,11 +253,611 @@ class Canvas(QtWidgets.QWidget):
         self._roller_last_tick_ms = 0
         self.relayout()
 
+    def set_roller_direction(self, direction: Any):
+        normalized = self.normalize_roller_direction(direction)
+        if normalized == self.roller_direction():
+            return
+        self._roller_direction = normalized
+        self._roller_last_tick_ms = 0
+        self.relayout()
+
     def _roller_mode(self) -> Optional[str]:
         mode = self.normalize_layout_mode(self._layout_mode)
-        if mode in {self.LAYOUT_ROLLER_ROW, self.LAYOUT_ROLLER_COLUMN}:
+        if mode in self._roller_layout_modes():
             return mode
         return None
+
+    @classmethod
+    def _roller_layout_modes(cls) -> set[str]:
+        return {
+            cls.LAYOUT_ROLLER_ROW,
+            cls.LAYOUT_ROLLER_COLUMN,
+            cls.LAYOUT_INFINITE_ROLLER_ROW,
+            cls.LAYOUT_INFINITE_ROLLER_COLUMN,
+        }
+
+    @classmethod
+    def _virtual_roller_layout_modes(cls) -> set[str]:
+        return {
+            cls.LAYOUT_INFINITE_ROLLER_ROW,
+            cls.LAYOUT_INFINITE_ROLLER_COLUMN,
+        }
+
+    @classmethod
+    def _roller_axis_groups(cls) -> Dict[str, tuple[str, str]]:
+        return {
+            cls.ROLLER_AXIS_HORIZONTAL: (cls.LAYOUT_ROLLER_ROW, cls.LAYOUT_INFINITE_ROLLER_ROW),
+            cls.ROLLER_AXIS_VERTICAL: (cls.LAYOUT_ROLLER_COLUMN, cls.LAYOUT_INFINITE_ROLLER_COLUMN),
+        }
+
+    def _virtual_roller_mode(self, mode: Optional[str] = None) -> Optional[str]:
+        normalized = self.normalize_layout_mode(self._layout_mode if mode is None else mode)
+        if normalized in self._virtual_roller_layout_modes():
+            return normalized
+        return None
+
+    @classmethod
+    def _roller_axis_mode(cls, mode: str) -> str:
+        if mode == cls.LAYOUT_INFINITE_ROLLER_COLUMN:
+            return cls.LAYOUT_ROLLER_COLUMN
+        if mode == cls.LAYOUT_INFINITE_ROLLER_ROW:
+            return cls.LAYOUT_ROLLER_ROW
+        return mode
+
+    def _roller_entry_tile_count(self) -> int:
+        return max(1, int(self.roller_visible_count()))
+
+    def _ensure_roller_entry_tiles(self, mode: Optional[str] = None):
+        normalized = self.normalize_layout_mode(self._layout_mode if mode is None else mode)
+        if normalized not in self._roller_layout_modes():
+            return
+        if normalized in self._virtual_roller_layout_modes() and self._virtual_roller_sources:
+            return
+        desired = self._roller_entry_tile_count()
+        while len(self.docked_tiles()) < desired:
+            self.add_tile()
+
+    def infinite_roller_sources(self) -> List[Dict[str, str]]:
+        return [dict(entry) for entry in self._virtual_roller_sources]
+
+    def infinite_roller_saved_states(self) -> List[Dict[str, Any]]:
+        payload: List[Dict[str, Any]] = []
+        for key, state in (self._virtual_roller_saved_states or {}).items():
+            if not key or not isinstance(state, dict):
+                continue
+            payload.append({"path": key, "state": dict(state)})
+        return payload
+
+    def infinite_roller_active(self) -> bool:
+        return self._virtual_roller_mode() is not None
+
+    def set_infinite_roller_sources(self, paths: List[str]):
+        self._virtual_roller_sources = self._build_virtual_roller_sources_from_paths(paths)
+        self._prune_virtual_roller_saved_states()
+        self._virtual_roller_scroll_index = 0
+        self._roller_offset_px = 0.0
+        self._roller_last_tick_ms = 0
+        if self._virtual_roller_mode() is not None:
+            self._configure_virtual_roller_tiles()
+            self.relayout()
+
+    def set_infinite_roller_bookmark_targets(self, targets: List[tuple]):
+        self._virtual_roller_sources = self._build_virtual_roller_sources_from_bookmark_targets(targets)
+        self._prune_virtual_roller_saved_states()
+        self._virtual_roller_scroll_index = 0
+        self._roller_offset_px = 0.0
+        self._roller_last_tick_ms = 0
+        if self._virtual_roller_mode() is not None:
+            self._configure_virtual_roller_tiles()
+            self.relayout()
+
+    def restore_infinite_roller_sources(self, entries: Any, scroll_index: Any = 0):
+        if not isinstance(entries, list):
+            self._virtual_roller_sources = []
+            self._virtual_roller_scroll_index = 0
+            return
+        normalized_entries: List[Dict[str, str]] = []
+        seen: set[str] = set()
+        for entry in entries:
+            if isinstance(entry, dict):
+                path = str(entry.get("path", "") or "").strip()
+                subtitle = str(entry.get("subtitle", "") or "").strip()
+                source_id = str(entry.get("source_id", "") or "").strip()
+                raw_bookmark_targets = entry.get("bookmark_targets")
+            else:
+                path = str(entry or "").strip()
+                subtitle = ""
+                source_id = ""
+                raw_bookmark_targets = None
+            if not path:
+                continue
+            key = self._virtual_roller_source_key(path)
+            dedupe_key = f"{key}\0{source_id}" if source_id else key
+            if not key or dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            payload = {"path": path}
+            if source_id:
+                payload["source_id"] = source_id
+            bookmark_targets = self._normalize_virtual_source_bookmark_targets(raw_bookmark_targets)
+            if bookmark_targets:
+                payload["bookmark_targets"] = self._serialize_virtual_bookmark_targets(bookmark_targets)
+            if subtitle:
+                payload["subtitle"] = subtitle
+            normalized_entries.append(payload)
+        self._virtual_roller_sources = normalized_entries
+        self._prune_virtual_roller_saved_states()
+        source_count = len(normalized_entries)
+        if source_count <= 0:
+            self._virtual_roller_scroll_index = 0
+            return
+        try:
+            normalized_scroll = int(scroll_index)
+        except (TypeError, ValueError):
+            normalized_scroll = 0
+        self._virtual_roller_scroll_index = normalized_scroll % source_count
+        self._roller_offset_px = 0.0
+        self._roller_last_tick_ms = 0
+        if self._virtual_roller_mode() is not None:
+            self._configure_virtual_roller_tiles()
+            self.relayout()
+
+    def restore_infinite_roller_saved_states(self, entries: Any):
+        restored: Dict[str, Dict[str, Any]] = {}
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                key = self._virtual_roller_source_key(entry.get("path", ""))
+                state = entry.get("state")
+                if not key or not isinstance(state, dict):
+                    continue
+                restored[key] = dict(state)
+        self._virtual_roller_saved_states = restored
+        self._prune_virtual_roller_saved_states()
+
+    def _virtual_roller_source_key(self, path: str) -> str:
+        text = str(path or "").strip()
+        if not text:
+            return ""
+        if os.path.exists(text):
+            try:
+                return os.path.normcase(os.path.abspath(text))
+            except Exception:
+                return text
+        return text
+
+    def _build_virtual_roller_sources_from_paths(self, paths: List[str]) -> List[Dict[str, str]]:
+        items: List[Dict[str, str]] = []
+        seen: set[str] = set()
+        for raw_path in list(paths or []):
+            path = str(raw_path or "").strip()
+            if not path:
+                continue
+            key = self._virtual_roller_source_key(path)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            items.append({"path": path})
+        return items
+
+    def _build_virtual_roller_sources_from_bookmark_targets(self, targets: List[tuple]) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        for index, target in enumerate(list(targets or [])):
+            try:
+                path = str(target[0] or "").strip()
+                position_ms = max(0, int(target[1]))
+                end_ms = int(target[2]) if len(target) >= 3 and target[2] is not None else None
+                loop_enabled = bool(target[3]) if len(target) >= 4 else False
+            except Exception:
+                continue
+            if not path:
+                continue
+            if end_ms is not None and end_ms <= position_ms:
+                end_ms = None
+                loop_enabled = False
+            items.append(
+                {
+                    "path": path,
+                    "source_id": f"bookmark:{index}:{position_ms}:{end_ms if end_ms is not None else -1}",
+                    "bookmark_targets": self._serialize_virtual_bookmark_targets(
+                        [(position_ms, end_ms, bool(loop_enabled))]
+                    ),
+                }
+            )
+        return items
+
+    def _serialize_virtual_bookmark_targets(self, targets) -> list[list[Any]]:
+        serialized: list[list[Any]] = []
+        for position_ms, end_ms, loop_enabled in self._normalize_virtual_source_bookmark_targets(targets):
+            serialized.append([int(position_ms), int(end_ms) if end_ms is not None else None, bool(loop_enabled)])
+        return serialized
+
+    def _normalize_virtual_source_bookmark_targets(self, raw_targets) -> list[tuple[int, Optional[int], bool]]:
+        normalized: list[tuple[int, Optional[int], bool]] = []
+        if not isinstance(raw_targets, list):
+            return normalized
+        for raw in raw_targets:
+            try:
+                if isinstance(raw, dict):
+                    position_ms = int(raw.get("position_ms", raw.get("start_ms", 0)) or 0)
+                    raw_end = raw.get("end_ms")
+                    loop_enabled = bool(raw.get("loop_enabled", raw.get("loop", False)))
+                else:
+                    position_ms = int(raw[0])
+                    raw_end = raw[1] if len(raw) >= 2 else None
+                    loop_enabled = bool(raw[2]) if len(raw) >= 3 else False
+                end_ms = int(raw_end) if raw_end is not None else None
+            except Exception:
+                continue
+            position_ms = max(0, int(position_ms))
+            if end_ms is not None and end_ms <= position_ms:
+                end_ms = None
+                loop_enabled = False
+            normalized.append((position_ms, end_ms, loop_enabled))
+        return normalized
+
+    def _collect_virtual_roller_sources(self) -> List[Dict[str, str]]:
+        tile_sources: List[List[Dict[str, str]]] = []
+        target_tiles = [tile for tile in self.docked_tiles() if tile in self.tiles]
+        if not target_tiles:
+            target_tiles = list(self.tiles)
+        for tile in target_tiles:
+            entries: List[Dict[str, str]] = []
+            playlist = [str(path or "").strip() for path in list(getattr(tile, "playlist", []) or [])]
+            playlist = [path for path in playlist if path]
+            if playlist:
+                for path in playlist:
+                    entry = {"path": path}
+                    subtitle = str(tile.get_external_subtitle_for_path(path) or "").strip()
+                    if subtitle:
+                        entry["subtitle"] = subtitle
+                    entries.append(entry)
+            else:
+                current_path = ""
+                try:
+                    current_path = str(tile._current_playlist_path() or tile._current_media_path() or "").strip()
+                except Exception:
+                    logger.debug("virtual roller current-path probe failed", exc_info=True)
+                if current_path:
+                    entry = {"path": current_path}
+                    subtitle = str(tile.get_external_subtitle_for_path(current_path) or "").strip()
+                    if subtitle:
+                        entry["subtitle"] = subtitle
+                    entries.append(entry)
+            if entries:
+                tile_sources.append(entries)
+        max_len = max((len(entries) for entries in tile_sources), default=0)
+        collected: List[Dict[str, str]] = []
+        seen: set[str] = set()
+        for offset in range(max_len):
+            for entries in tile_sources:
+                if offset >= len(entries):
+                    continue
+                entry = dict(entries[offset])
+                key = self._virtual_roller_source_key(entry.get("path", ""))
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                collected.append(entry)
+        return collected
+
+    def _prune_virtual_roller_saved_states(self):
+        valid_keys = {
+            self._virtual_roller_source_key(entry.get("path", ""))
+            for entry in self._virtual_roller_sources
+        }
+        valid_keys.discard("")
+        if not valid_keys:
+            self._virtual_roller_saved_states = {}
+            return
+        self._virtual_roller_saved_states = {
+            key: dict(state)
+            for key, state in (self._virtual_roller_saved_states or {}).items()
+            if key in valid_keys and isinstance(state, dict)
+        }
+
+    def _capture_virtual_roller_active_states(self):
+        if self._virtual_roller_mode() is None:
+            return
+        for tile in self.docked_tiles():
+            self._save_virtual_roller_state_for_tile(tile)
+
+    def _save_virtual_roller_state_for_tile(self, tile: VideoTile):
+        try:
+            current_path = str(tile._current_playlist_path() or tile._current_media_path() or "").strip()
+        except Exception:
+            logger.debug("virtual roller current-path probe failed during state capture", exc_info=True)
+            current_path = ""
+        key = self._virtual_roller_source_key(current_path)
+        if not key:
+            return
+        try:
+            self._virtual_roller_saved_states[key] = dict(tile.to_state())
+        except Exception:
+            logger.debug("virtual roller tile state capture failed", exc_info=True)
+
+    def _saved_virtual_roller_state(self, path: str) -> Optional[Dict[str, Any]]:
+        key = self._virtual_roller_source_key(path)
+        if not key:
+            return None
+        state = (self._virtual_roller_saved_states or {}).get(key)
+        if not isinstance(state, dict):
+            return None
+        return dict(state)
+
+    def _detached_virtual_roller_source_keys(self) -> set[str]:
+        keys: set[str] = set()
+        for tile in list(self.detached_windows.keys()):
+            try:
+                current_path = str(tile._current_playlist_path() or tile._current_media_path() or "").strip()
+            except Exception:
+                logger.debug("detached virtual roller current-path probe failed", exc_info=True)
+                current_path = ""
+            key = self._virtual_roller_source_key(current_path)
+            if key:
+                keys.add(key)
+        return keys
+
+    def _virtual_roller_assignable_sources(self) -> List[Dict[str, str]]:
+        source_count = len(self._virtual_roller_sources)
+        if source_count <= 0:
+            return []
+        reserved_keys = self._detached_virtual_roller_source_keys()
+        start_index = int(self._virtual_roller_scroll_index) % source_count
+        ordered: List[Dict[str, str]] = []
+        for offset in range(source_count):
+            entry = self._virtual_roller_sources[(start_index + offset) % source_count]
+            key = self._virtual_roller_source_key(entry.get("path", ""))
+            if reserved_keys and key in reserved_keys:
+                continue
+            ordered.append(entry)
+        if ordered:
+            return ordered
+        return list(self._virtual_roller_sources)
+
+    def _virtual_roller_pool_size(self, source_count: int) -> int:
+        source_count = max(0, int(source_count))
+        if source_count <= 0:
+            return self._roller_entry_tile_count()
+        if source_count == 1:
+            return 1
+        return min(source_count, max(2, self.roller_visible_count() + 1))
+
+    def _virtual_roller_desired_docked_pool_size(self, source_count: Optional[int] = None) -> int:
+        if source_count is None:
+            source_count = len(self._virtual_roller_sources)
+        base_pool = self._virtual_roller_pool_size(source_count)
+        if self._virtual_roller_mode() is not None:
+            return base_pool
+        detached_count = len(self.detached_windows)
+        if detached_count <= 0:
+            return base_pool
+        return max(0, int(base_pool) - int(detached_count))
+
+    def _configure_virtual_roller_tiles(self):
+        if self._virtual_roller_mode() is None:
+            return
+        desired = self._virtual_roller_desired_docked_pool_size(len(self._virtual_roller_sources))
+        self._virtual_roller_pool_updating = True
+        try:
+            if self.detached_windows and not self._keep_detached_tiles_for_focus_modes():
+                self.redock_all_detached()
+            while len(self.docked_tiles()) < desired:
+                self.add_tile()
+            docked_tiles = self.docked_tiles()
+            while len(docked_tiles) > desired:
+                tile = docked_tiles[-1]
+                try:
+                    tile.clear_playlist()
+                except Exception:
+                    logger.debug("virtual roller tile clear skipped while shrinking pool", exc_info=True)
+                self.remove_tile(tile)
+                docked_tiles = self.docked_tiles()
+            self._assign_virtual_roller_sources(docked_tiles, 0)
+        finally:
+            self._virtual_roller_pool_updating = False
+
+    def _expand_virtual_roller_sources_to_tiles(self):
+        self._capture_virtual_roller_active_states()
+        sources = self.infinite_roller_sources()
+        if not sources:
+            return
+        self._virtual_roller_pool_updating = True
+        try:
+            if self.detached_windows and not self._keep_detached_tiles_for_focus_modes():
+                self.redock_all_detached()
+            desired = len(sources)
+            while len(self.docked_tiles()) < desired:
+                self.add_tile()
+            docked_tiles = self.docked_tiles()
+            while len(docked_tiles) > desired:
+                tile = docked_tiles[-1]
+                try:
+                    tile.clear_playlist()
+                except Exception:
+                    logger.debug("virtual roller tile clear skipped while expanding", exc_info=True)
+                self.remove_tile(tile)
+                docked_tiles = self.docked_tiles()
+            for idx, tile in enumerate(docked_tiles):
+                if idx >= len(sources):
+                    break
+                self._assign_virtual_source_to_tile(tile, sources[idx])
+        finally:
+            self._virtual_roller_pool_updating = False
+
+    def _assign_virtual_source_to_tile(self, tile: VideoTile, source: Dict[str, str]):
+        path = str(source.get("path", "") or "").strip()
+        if not path:
+            try:
+                tile.clear_playlist()
+            except Exception:
+                logger.debug("virtual roller empty-source clear failed", exc_info=True)
+            return
+        current_path = ""
+        try:
+            current_path = str(tile._current_playlist_path() or tile._current_media_path() or "").strip()
+        except Exception:
+            logger.debug("virtual roller current-path probe failed", exc_info=True)
+        if current_path == path and list(getattr(tile, "playlist", []) or []) == [path]:
+            self._apply_virtual_source_bookmark_targets(tile, 0, source)
+            subtitle = str(source.get("subtitle", "") or "").strip()
+            if subtitle:
+                tile.set_external_subtitle_for_path(path, subtitle, overwrite=True)
+            return
+        if current_path:
+            self._save_virtual_roller_state_for_tile(tile)
+        restored = False
+        saved_state = None if "bookmark_targets" in source else self._saved_virtual_roller_state(path)
+        if saved_state:
+            try:
+                state = dict(saved_state)
+                state["playlist"] = [path]
+                state["current_index"] = 0
+                entries = state.get("playlist_entries")
+                if isinstance(entries, list) and entries:
+                    entry = dict(entries[0]) if isinstance(entries[0], dict) else {}
+                    entry["path"] = path
+                    entry["entry_id"] = 0
+                    state["playlist_entries"] = [entry]
+                tile.from_state(state)
+                restored = True
+            except Exception:
+                logger.debug("virtual roller saved-state restore failed", exc_info=True)
+        if not restored:
+            tile.clear_playlist()
+            tile.add_to_playlist(path, play_now=False)
+        self._apply_virtual_source_bookmark_targets(tile, 0, source)
+        subtitle = str(source.get("subtitle", "") or "").strip()
+        if subtitle:
+            tile.set_external_subtitle_for_path(path, subtitle, overwrite=True)
+
+    def _virtual_roller_lane_sources(
+        self,
+        ordered_sources: List[Dict[str, str]],
+        first_index: int,
+        lane_stride: int,
+    ) -> List[Dict[str, str]]:
+        if not ordered_sources:
+            return []
+        try:
+            normalized_first = max(0, int(first_index))
+        except (TypeError, ValueError):
+            normalized_first = 0
+        try:
+            normalized_stride = max(1, int(lane_stride))
+        except (TypeError, ValueError):
+            normalized_stride = 1
+        return [dict(ordered_sources[idx]) for idx in range(normalized_first, len(ordered_sources), normalized_stride)]
+
+    def _assign_virtual_lane_to_tile(self, tile: VideoTile, lane_sources: List[Dict[str, str]]):
+        if not lane_sources:
+            try:
+                tile.clear_playlist()
+            except Exception:
+                logger.debug("virtual roller empty-lane clear failed", exc_info=True)
+            return
+        lane_paths = [str(entry.get("path", "") or "").strip() for entry in lane_sources]
+        lane_paths = [path for path in lane_paths if path]
+        if not lane_paths:
+            try:
+                tile.clear_playlist()
+            except Exception:
+                logger.debug("virtual roller empty-lane-path clear failed", exc_info=True)
+            return
+        first_path = lane_paths[0]
+        current_path = ""
+        try:
+            current_path = str(tile._current_playlist_path() or tile._current_media_path() or "").strip()
+        except Exception:
+            logger.debug("virtual roller current-path probe failed for lane assign", exc_info=True)
+        existing_playlist = [str(path or "").strip() for path in list(getattr(tile, "playlist", []) or [])]
+        if current_path == first_path and existing_playlist == lane_paths:
+            self._apply_virtual_lane_bookmark_targets(tile, lane_sources)
+            for source in lane_sources:
+                subtitle = str(source.get("subtitle", "") or "").strip()
+                path = str(source.get("path", "") or "").strip()
+                if subtitle and path:
+                    tile.set_external_subtitle_for_path(path, subtitle, overwrite=True)
+            return
+        if current_path:
+            self._save_virtual_roller_state_for_tile(tile)
+        restored = False
+        saved_state = None if any("bookmark_targets" in source for source in lane_sources) else self._saved_virtual_roller_state(first_path)
+        if saved_state:
+            try:
+                state = dict(saved_state)
+                # In infinite-roller docked lanes, playback intent is owned by
+                # the roller visibility sync path, not by saved-state restore.
+                state["playing"] = False
+                state["playlist"] = list(lane_paths)
+                state["current_index"] = 0
+                first_entry = None
+                entries = state.get("playlist_entries")
+                if isinstance(entries, list) and entries:
+                    candidate = entries[0]
+                    if isinstance(candidate, dict):
+                        first_entry = dict(candidate)
+                rebuilt_entries: List[Dict[str, Any]] = []
+                for entry_index, path in enumerate(lane_paths):
+                    if entry_index == 0 and first_entry is not None:
+                        entry = dict(first_entry)
+                    else:
+                        entry = {}
+                    entry["path"] = path
+                    entry["entry_id"] = entry_index
+                    rebuilt_entries.append(entry)
+                state["playlist_entries"] = rebuilt_entries
+                tile.from_state(state)
+                restored = True
+            except Exception:
+                logger.debug("virtual roller lane saved-state restore failed", exc_info=True)
+        if not restored:
+            tile.clear_playlist()
+            for path in lane_paths:
+                tile.add_to_playlist(path, play_now=False)
+            tile.current_index = 0 if tile.playlist else -1
+        self._apply_virtual_lane_bookmark_targets(tile, lane_sources)
+        for source in lane_sources:
+            subtitle = str(source.get("subtitle", "") or "").strip()
+            path = str(source.get("path", "") or "").strip()
+            if subtitle and path:
+                tile.set_external_subtitle_for_path(path, subtitle, overwrite=True)
+
+    def _apply_virtual_lane_bookmark_targets(self, tile: VideoTile, lane_sources: List[Dict[str, Any]]) -> None:
+        for entry_index, source in enumerate(list(lane_sources or [])):
+            self._apply_virtual_source_bookmark_targets(tile, entry_index, source)
+
+    def _apply_virtual_source_bookmark_targets(self, tile: VideoTile, entry_index: int, source: Dict[str, Any]) -> None:
+        if "bookmark_targets" not in source:
+            return
+        targets = self._normalize_virtual_source_bookmark_targets(source.get("bookmark_targets"))
+        try:
+            tile.set_playlist_entry_bookmark_targets(int(entry_index), targets, cursor=0)
+        except Exception:
+            logger.debug("virtual roller bookmark target apply failed", exc_info=True)
+
+    def _virtual_roller_bookmark_source_mode(self) -> bool:
+        return any("bookmark_targets" in entry for entry in list(self._virtual_roller_sources or []))
+
+    def _assign_virtual_roller_sources(self, docked_tiles: List[VideoTile], base_slot: int):
+        ordered_sources = self._virtual_roller_assignable_sources()
+        source_count = len(ordered_sources)
+        if source_count <= 0:
+            for tile in docked_tiles:
+                try:
+                    tile.clear_playlist()
+                except Exception:
+                    logger.debug("virtual roller tile clear failed", exc_info=True)
+            return
+        pool_size = len(docked_tiles)
+        if pool_size <= 0:
+            return
+        for idx, tile in enumerate(docked_tiles):
+            display_slot = (idx - int(base_slot)) % pool_size
+            source_index = display_slot % source_count
+            lane_sources = self._virtual_roller_lane_sources(ordered_sources, source_index, pool_size)
+            self._assign_virtual_lane_to_tile(tile, lane_sources)
 
     def _invoke_tile_playback(self, tile: VideoTile, action: str):
         previous = bool(getattr(tile, "_suppress_playback_notify", False))
@@ -212,6 +866,86 @@ class Canvas(QtWidgets.QWidget):
             getattr(tile, action)()
         finally:
             setattr(tile, "_suppress_playback_notify", previous)
+
+    def refresh_tile_surfaces(
+        self,
+        tiles: Optional[List[VideoTile]] = None,
+        *,
+        preserve_playback: bool = True,
+        delays: tuple[int, ...] = (0, 60, 160),
+    ):
+        target_tiles: List[VideoTile] = []
+        seen: set[VideoTile] = set()
+        for tile in list(tiles or self.tiles):
+            if tile in seen or tile not in self.tiles:
+                continue
+            seen.add(tile)
+            target_tiles.append(tile)
+        if not target_tiles:
+            return
+        playback_states = {
+            tile: bool(preserve_playback and self._tile_is_playing(tile))
+            for tile in target_tiles
+        }
+        self._refresh_tile_surfaces_step(playback_states, allow_resume=False)
+        delayed_attempts = [int(delay) for delay in delays if int(delay) > 0]
+        for attempt_index, delay_ms in enumerate(delayed_attempts, start=1):
+            QtCore.QTimer.singleShot(
+                delay_ms,
+                lambda states=playback_states.copy(), allow_resume=(attempt_index >= 2): self._refresh_tile_surfaces_step(
+                    states,
+                    allow_resume=allow_resume,
+                ),
+            )
+
+    def _refresh_tile_surfaces_step(
+        self,
+        playback_states: Dict[VideoTile, bool],
+        *,
+        allow_resume: bool = True,
+    ):
+        for tile, was_playing in list(playback_states.items()):
+            if tile not in self.tiles:
+                continue
+            player = getattr(tile, "mediaplayer", None)
+            if player is None:
+                continue
+            try:
+                if tile.is_static_image():
+                    tile._refresh_image_display()
+                    continue
+            except Exception:
+                logger.debug("tile static-image probe failed during surface refresh", exc_info=True)
+            try:
+                if player.get_media() is None:
+                    continue
+            except Exception:
+                logger.debug("tile media probe failed during surface refresh", exc_info=True)
+                continue
+            try:
+                tile.bind_hwnd(force=True)
+            except Exception:
+                logger.debug("tile bind_hwnd(force=True) refresh failed", exc_info=True)
+                continue
+            try:
+                tile._apply_display_mode()
+            except Exception:
+                logger.debug("tile display mode refresh failed after force bind", exc_info=True)
+            if not was_playing or not allow_resume:
+                continue
+            try:
+                player.set_rate(float(getattr(tile, "playback_rate", 1.0) or 1.0))
+            except Exception:
+                logger.debug("tile playback rate restore failed during surface refresh", exc_info=True)
+            try:
+                if not self._tile_is_playing(tile):
+                    player.play()
+            except Exception:
+                logger.debug("tile playback resume failed during surface refresh", exc_info=True)
+            try:
+                tile._update_play_button()
+            except Exception:
+                logger.debug("tile play button refresh failed during surface refresh", exc_info=True)
 
     def _roller_visible_slots(self, n: int) -> int:
         n = max(1, int(n))
@@ -283,18 +1017,133 @@ class Canvas(QtWidgets.QWidget):
         ):
             self._set_roller_running(False)
             return
-        _axis, _step, total = self._roller_metrics(mode, n, self.width(), self.height())
+        metric_mode = self._roller_axis_mode(mode)
+        _axis, step, total = self._roller_metrics(metric_mode, n, self.width(), self.height())
         if total <= 0:
             return
+        previous_offset = float(self._roller_offset_px)
         now_ms = QtCore.QDateTime.currentMSecsSinceEpoch()
         last_ms = self._roller_last_tick_ms or now_ms
         self._roller_last_tick_ms = now_ms
         delta_ms = max(0, int(now_ms - last_ms))
         if delta_ms <= 0:
             return
-        delta_px = (float(delta_ms) / 1000.0) * float(self._roller_px_per_sec)
+        direction_sign = self.roller_direction_sign()
+        delta_px = (float(delta_ms) / 1000.0) * float(self._roller_px_per_sec) * float(direction_sign)
         self._roller_offset_px = (float(self._roller_offset_px) + delta_px) % float(total)
+        if (
+            self._virtual_roller_mode(mode) is not None
+            and step > 0
+            and n > 0
+            and self._virtual_roller_sources
+        ):
+            old_slot = int(previous_offset // float(step)) % n
+            new_slot = int(float(self._roller_offset_px) // float(step)) % n
+            if new_slot != old_slot:
+                if direction_sign > 0:
+                    delta_slots = (new_slot - old_slot) % n
+                else:
+                    delta_slots = (old_slot - new_slot) % n
+                self._virtual_roller_scroll_index = (
+                    int(self._virtual_roller_scroll_index) + (int(direction_sign) * int(delta_slots))
+                ) % len(self._virtual_roller_sources)
+                self._advance_virtual_roller_wrapped_tiles(
+                    docked_tiles,
+                    old_slot,
+                    delta_slots,
+                    direction_sign=direction_sign,
+                )
         self.relayout()
+
+    def _advance_virtual_roller_wrapped_tiles(
+        self,
+        docked_tiles: List[VideoTile],
+        old_slot: int,
+        delta_slots: int,
+        *,
+        direction_sign: int,
+    ) -> None:
+        if not docked_tiles or delta_slots <= 0:
+            return
+        tile_count = len(docked_tiles)
+        for slot_offset in range(int(delta_slots)):
+            if direction_sign > 0:
+                tile_index = (int(old_slot) + slot_offset) % tile_count
+                lane_step = 1
+            else:
+                tile_index = (int(old_slot) - 1 - slot_offset) % tile_count
+                lane_step = -1
+            tile = docked_tiles[tile_index]
+            try:
+                self._advance_virtual_roller_lane_on_wrap(tile, lane_step=lane_step)
+            except Exception:
+                logger.debug("virtual roller lane wrap advance failed", exc_info=True)
+
+    def _advance_virtual_roller_lane_on_wrap(self, tile: VideoTile, *, lane_step: int = 1) -> None:
+        playlist = [str(path or "").strip() for path in list(getattr(tile, "playlist", []) or [])]
+        if len(playlist) <= 1:
+            return
+        current_path = ""
+        try:
+            current_path = str(tile._current_playlist_path() or tile._current_media_path() or "").strip()
+        except Exception:
+            logger.debug("virtual roller current-path probe failed during wrap advance", exc_info=True)
+        if current_path:
+            self._save_virtual_roller_state_for_tile(tile)
+        try:
+            current_index = int(getattr(tile, "current_index", 0))
+        except (TypeError, ValueError):
+            current_index = 0
+        if not (0 <= current_index < len(playlist)):
+            current_index = 0
+        step_value = -1 if int(lane_step) < 0 else 1
+        next_index = (current_index + step_value) % len(playlist)
+        if next_index == current_index:
+            return
+        was_playing = self._tile_is_playing(tile)
+        next_path = playlist[next_index]
+        restored = False
+        saved_state = None if self._virtual_roller_bookmark_source_mode() else self._saved_virtual_roller_state(next_path)
+        if saved_state:
+            try:
+                state = dict(saved_state)
+                state["playing"] = False
+                state["playlist"] = list(playlist)
+                state["current_index"] = next_index
+                current_entry = None
+                entries = state.get("playlist_entries")
+                if isinstance(entries, list) and entries:
+                    candidate_index = min(
+                        max(int(saved_state.get("current_index", 0) or 0), 0),
+                        len(entries) - 1,
+                    )
+                    candidate = entries[candidate_index]
+                    if isinstance(candidate, dict):
+                        current_entry = dict(candidate)
+                rebuilt_entries: List[Dict[str, Any]] = []
+                for entry_index, path in enumerate(playlist):
+                    if entry_index == next_index and current_entry is not None:
+                        entry = dict(current_entry)
+                    else:
+                        entry = {}
+                    entry["path"] = path
+                    entry["entry_id"] = entry_index
+                    rebuilt_entries.append(entry)
+                state["playlist_entries"] = rebuilt_entries
+                tile.from_state(state)
+                restored = True
+            except Exception:
+                logger.debug("virtual roller saved-state restore failed during wrap advance", exc_info=True)
+        if not restored:
+            tile.current_index = next_index
+            if not tile.set_media(next_path, show_error_dialog=False):
+                return
+            try:
+                tile._apply_current_playlist_start_position()
+            except Exception:
+                logger.debug("virtual roller lane start-position apply failed during wrap advance", exc_info=True)
+        if was_playing:
+            self._invoke_tile_playback(tile, "play")
 
     def _apply_roller_layout(self, docked_tiles: List[VideoTile], viewport_w: int, viewport_h: int) -> bool:
         mode = self._roller_mode()
@@ -308,12 +1157,17 @@ class Canvas(QtWidgets.QWidget):
         ):
             self._set_roller_running(False)
             return False
-        axis, step, total = self._roller_metrics(mode, n, viewport_w, viewport_h)
+        metric_mode = self._roller_axis_mode(mode)
+        axis, step, total = self._roller_metrics(metric_mode, n, viewport_w, viewport_h)
         if total <= 0:
             self._set_roller_running(False)
             return False
         self._roller_offset_px = float(self._roller_offset_px) % float(total)
         offset = float(self._roller_offset_px)
+        if self._virtual_roller_mode(mode) is not None and n > 0:
+            if any(not list(getattr(tile, "playlist", []) or []) for tile in docked_tiles):
+                base_slot = int(offset // float(step)) % n if step > 0 else 0
+                self._assign_virtual_roller_sources(docked_tiles, base_slot)
         for idx, tile in enumerate(docked_tiles):
             pos = float(idx * step) - offset
             while pos <= -float(step):
@@ -349,6 +1203,63 @@ class Canvas(QtWidgets.QWidget):
         cols = math.ceil(math.sqrt(n))
         rows = math.ceil(n / cols) if cols > 0 else 0
         return cols, rows
+
+    def _distribute_extent(self, total: int, parts: int) -> list[int]:
+        total = max(0, int(total))
+        parts = max(1, int(parts))
+        base = total // parts
+        remainder = total % parts
+        return [base + (1 if index < remainder else 0) for index in range(parts)]
+
+    def _auto_row_distribution(self, n: int) -> list[int]:
+        n = max(0, int(n))
+        if n <= 0:
+            return []
+        _cols, rows = self._grid_dimensions_for_count(n)
+        if rows <= 1:
+            return [n]
+        distribution: list[int] = []
+        remaining = n
+        for row_index in range(rows):
+            remaining_rows = rows - row_index
+            count = max(1, math.ceil(remaining / remaining_rows))
+            distribution.append(count)
+            remaining -= count
+        return distribution
+
+    def _apply_balanced_auto_layout(
+        self,
+        docked_tiles: List[VideoTile],
+        viewport_w: int,
+        viewport_h: int,
+    ) -> bool:
+        if self.normalize_layout_mode(self._layout_mode) != self.LAYOUT_AUTO:
+            return False
+        n = len(docked_tiles)
+        if n <= 0:
+            return False
+        row_counts = self._auto_row_distribution(n)
+        if not row_counts:
+            return False
+        row_heights = self._distribute_extent(viewport_h, len(row_counts))
+        tile_index = 0
+        y = 0
+        for row_count, row_height in zip(row_counts, row_heights):
+            col_widths = self._distribute_extent(viewport_w, row_count)
+            x = 0
+            for col_width in col_widths:
+                if tile_index >= n:
+                    break
+                tile = docked_tiles[tile_index]
+                tile_index += 1
+                rect = QtCore.QRect(x, y, col_width, row_height)
+                geom_changed = self._set_tile_geometry_if_needed(tile, rect)
+                vis_changed = self._set_tile_visible_if_needed(tile, True)
+                if geom_changed or vis_changed:
+                    tile.bind_hwnd()
+                x += col_width
+            y += row_height
+        return tile_index == n
 
     def docked_tiles(self) -> List[VideoTile]:
         return [
@@ -471,7 +1382,7 @@ class Canvas(QtWidgets.QWidget):
     def _compact_mode_enabled(self) -> bool:
         mw = self.window()
         try:
-            return bool(getattr(mw, "compact_action").isChecked())
+            return bool(getattr(mw, "_is_compact_mode")())
         except (AttributeError, RuntimeError):
             logger.debug("canvas compact action probe failed", exc_info=True)
             return False
@@ -635,6 +1546,19 @@ class Canvas(QtWidgets.QWidget):
     ):
         if tile not in self.tiles or self.is_detached(tile):
             return
+        if (
+            self._virtual_roller_mode() is not None
+            and tile in self.docked_tiles()
+            and not bool(getattr(tile, "_virtual_roller_detached_clone", False))
+        ):
+            if self._detach_virtual_roller_tile(
+                tile,
+                global_pos=global_pos,
+                grab_offset=grab_offset,
+                initial_geometry=initial_geometry,
+                restore_focus=restore_focus,
+            ):
+                return
         opacity_dock_owner = getattr(tile, "_opacity_dock_owner", None)
         if opacity_dock_owner is not None:
             release = getattr(opacity_dock_owner, "release_tile_to_detached", None)
@@ -682,24 +1606,156 @@ class Canvas(QtWidgets.QWidget):
         except Exception:
             logger.debug("focus review window reanchor skipped during detach", exc_info=True)
         tile.show()
-        tile.bind_hwnd()
+        tile.bind_hwnd(force=True)
         self.relayout()
+        self.refresh_tile_surfaces(self.docked_tiles() + [tile])
         self._minimize_main_window_if_no_docked_tiles()
         if restore_focus:
             window.restore_focus()
         self._notify_playlist_changed()
 
-    def redock_tile(self, tile: VideoTile, target_tile: Optional[VideoTile] = None):
-        overlay_group_id = self.overlay_group_id_for_tile(tile)
-        if overlay_group_id:
-            self.clear_overlay_stack_for_group(overlay_group_id, restore_focus=False)
-        window = self.detached_windows.pop(tile, None)
-        if window is None:
-            return
+    def _detach_virtual_roller_tile(
+        self,
+        tile: VideoTile,
+        *,
+        global_pos: Optional[QtCore.QPoint] = None,
+        grab_offset: Optional[QtCore.QPoint] = None,
+        initial_geometry: Optional[QtCore.QRect] = None,
+        restore_focus: bool = True,
+    ) -> bool:
         try:
-            window._cancel_deferred_callbacks()
-        except RuntimeError:
-            logger.debug("detached window deferred cancel skipped during redock", exc_info=True)
+            current_path = str(tile._current_playlist_path() or tile._current_media_path() or "").strip()
+        except Exception:
+            logger.debug("virtual roller detach current-path probe failed", exc_info=True)
+            current_path = ""
+        if not current_path:
+            return False
+        if initial_geometry is not None:
+            target_geometry = QtCore.QRect(initial_geometry)
+        else:
+            tile_top_left = tile.mapToGlobal(QtCore.QPoint(0, 0))
+            tile_size = tile.size()
+            if global_pos is not None and grab_offset is not None:
+                top_left = global_pos - grab_offset
+            else:
+                top_left = tile_top_left
+            target_geometry = QtCore.QRect(top_left, tile_size)
+        try:
+            cloned_state = dict(tile.to_state())
+        except Exception:
+            logger.debug("virtual roller detach tile state capture failed", exc_info=True)
+            return False
+        first_entry = None
+        entries = cloned_state.get("playlist_entries")
+        if isinstance(entries, list) and entries:
+            candidate = entries[min(max(int(getattr(tile, "current_index", 0) or 0), 0), len(entries) - 1)]
+            if isinstance(candidate, dict):
+                first_entry = dict(candidate)
+        current_subtitle = str(tile.get_external_subtitle_for_path(current_path) or "").strip()
+        cloned_state["playlist"] = [current_path]
+        cloned_state["current_index"] = 0
+        if first_entry is not None:
+            first_entry["path"] = current_path
+            first_entry["entry_id"] = 0
+            cloned_state["playlist_entries"] = [first_entry]
+        else:
+            cloned_state["playlist_entries"] = [{"path": current_path, "entry_id": 0}]
+        if current_subtitle:
+            cloned_state["subtitles"] = {tile._normalize_media_path(current_path): current_subtitle}
+        else:
+            cloned_state["subtitles"] = {}
+        detached_tile = self._create_tile_widget()
+        self.tiles.append(detached_tile)
+        setattr(detached_tile, "_virtual_roller_detached_clone", True)
+        setattr(detached_tile, "_virtual_roller_source_key", self._virtual_roller_source_key(current_path))
+        window = DetachedTileWindow(
+            detached_tile,
+            always_on_top=self._always_on_top_enabled(),
+            compact_mode=self._compact_mode_enabled(),
+        )
+        window.redockRequested.connect(self._redock_from_window_request)
+        window.overlayGeometryChanged.connect(self._on_overlay_geometry_changed)
+        window.overlayRestackRequested.connect(self._on_overlay_restack_requested)
+        self.detached_windows[detached_tile] = window
+        try:
+            detached_tile.from_state(cloned_state)
+        except Exception:
+            logger.debug("virtual roller detached tile state restore failed", exc_info=True)
+        window.set_window_opacity_value(getattr(detached_tile, "detached_window_opacity", 1.0), update_tile=False)
+        window.setGeometry(target_geometry)
+        window.show()
+        if restore_focus:
+            window.raise_()
+            try:
+                window.activateWindow()
+            except RuntimeError:
+                logger.debug("virtual roller detached window activateWindow skipped", exc_info=True)
+        detached_tile.show()
+        try:
+            detached_tile.bind_hwnd(force=True)
+        except Exception:
+            logger.debug("virtual roller detached tile force-bind skipped", exc_info=True)
+        should_resume_source = self._advance_virtual_roller_lane_after_detach(tile, current_path)
+        if should_resume_source:
+            self._roller_playback_active = True
+            self._roller_last_visible_tiles.discard(tile)
+        self.relayout()
+        self.refresh_tile_surfaces([tile, detached_tile])
+        self._minimize_main_window_if_no_docked_tiles()
+        if restore_focus:
+            window.restore_focus()
+        self._notify_playlist_changed()
+        return True
+
+    def _advance_virtual_roller_lane_after_detach(self, tile: VideoTile, removed_path: str) -> bool:
+        playlist = [str(path or "").strip() for path in list(getattr(tile, "playlist", []) or [])]
+        if not playlist:
+            return False
+        if len(playlist) <= 1:
+            # When this lane only has the current source, detach should behave as
+            # a pure clone. Keeping the source tile intact avoids dropping the
+            # docked lane to an empty playlist, which can cascade into roller
+            # pause/reconfiguration side effects.
+            return self._tile_is_playing(tile)
+        try:
+            removed_index = int(getattr(tile, "current_index", 0))
+        except (TypeError, ValueError):
+            removed_index = 0
+        if not (0 <= removed_index < len(playlist)):
+            try:
+                removed_index = playlist.index(str(removed_path or "").strip())
+            except ValueError:
+                removed_index = 0
+        was_playing = self._tile_is_playing(tile)
+        playlist.pop(removed_index)
+        try:
+            remove_playlist_entry_start_positions(tile, [removed_index])
+        except Exception:
+            logger.debug("virtual roller lane bookmark removal skipped during detach", exc_info=True)
+        try:
+            tile.pop_external_subtitle_for_path(removed_path)
+        except Exception:
+            logger.debug("virtual roller lane subtitle removal skipped during detach", exc_info=True)
+        tile.playlist = playlist
+        if not playlist:
+            tile.clear_playlist()
+            return False
+        next_index = min(max(0, removed_index), len(playlist) - 1)
+        tile.current_index = next_index
+        next_path = playlist[next_index]
+        if not tile.set_media(next_path, show_error_dialog=False):
+            return False
+        try:
+            tile._apply_current_playlist_start_position()
+        except Exception:
+            logger.debug("virtual roller lane start-position apply failed during detach", exc_info=True)
+        if was_playing:
+            self._invoke_tile_playback(tile, "play")
+            return True
+        self._invoke_tile_playback(tile, "pause")
+        return False
+
+    def _disconnect_detached_window_signals(self, window: DetachedTileWindow):
         try:
             window.redockRequested.disconnect(self._redock_from_window_request)
         except (RuntimeError, TypeError):
@@ -712,6 +1768,57 @@ class Canvas(QtWidgets.QWidget):
             window.overlayRestackRequested.disconnect(self._on_overlay_restack_requested)
         except (RuntimeError, TypeError):
             logger.debug("detached window overlayRestackRequested disconnect skipped", exc_info=True)
+
+    def _redock_virtual_roller_detached_clone(self, tile: VideoTile):
+        window = self.detached_windows.pop(tile, None)
+        if window is None:
+            return
+        try:
+            window._cancel_deferred_callbacks()
+        except RuntimeError:
+            logger.debug("virtual roller detached clone deferred cancel skipped", exc_info=True)
+        self._disconnect_detached_window_signals(window)
+        taken_tile = window.take_tile() or tile
+        self._save_virtual_roller_state_for_tile(taken_tile)
+        try:
+            taken_tile.shutdown()
+        except Exception:
+            logger.warning("virtual roller detached clone shutdown failed during redock", exc_info=True)
+            try:
+                taken_tile.stop()
+            except Exception:
+                logger.debug("virtual roller detached clone stop fallback failed", exc_info=True)
+        if taken_tile in self.tiles:
+            self.tiles.remove(taken_tile)
+        try:
+            taken_tile.setParent(None)
+        except RuntimeError:
+            logger.debug("virtual roller detached clone parent reset skipped", exc_info=True)
+        try:
+            taken_tile.deleteLater()
+        except RuntimeError:
+            logger.debug("virtual roller detached clone deleteLater skipped", exc_info=True)
+        window.hide()
+        window.deleteLater()
+        self.relayout()
+        self.refresh_tile_surfaces(self.docked_tiles())
+        self._notify_playlist_changed()
+
+    def redock_tile(self, tile: VideoTile, target_tile: Optional[VideoTile] = None):
+        overlay_group_id = self.overlay_group_id_for_tile(tile)
+        if overlay_group_id:
+            self.clear_overlay_stack_for_group(overlay_group_id, restore_focus=False)
+        if bool(getattr(tile, "_virtual_roller_detached_clone", False)):
+            self._redock_virtual_roller_detached_clone(tile)
+            return
+        window = self.detached_windows.pop(tile, None)
+        if window is None:
+            return
+        try:
+            window._cancel_deferred_callbacks()
+        except RuntimeError:
+            logger.debug("detached window deferred cancel skipped during redock", exc_info=True)
+        self._disconnect_detached_window_signals(window)
         taken_tile = window.take_tile() or tile
         # Returning to the dock resets detached-only presentation state.
         # A future detach should start from the default fully opaque window.
@@ -742,7 +1849,8 @@ class Canvas(QtWidgets.QWidget):
         if target_tile is not None and target_tile in self.tiles and target_tile is not taken_tile:
             self.move_tile_to_index(taken_tile, self.tiles.index(target_tile))
         self.relayout()
-        taken_tile.bind_hwnd()
+        taken_tile.bind_hwnd(force=True)
+        self.refresh_tile_surfaces(self.docked_tiles())
         window.hide()
         window.deleteLater()
         self._notify_playlist_changed()
@@ -809,12 +1917,15 @@ class Canvas(QtWidgets.QWidget):
             self.redock_tile(tile)
 
     def snapshot_state(self) -> Dict[str, Any]:
+        self._capture_virtual_roller_active_states()
         tiles = []
         for tile in self.tiles:
             entry: Dict[str, Any] = {
                 "state": tile.to_state(),
                 "detached": self.is_detached(tile),
             }
+            if bool(getattr(tile, "_virtual_roller_detached_clone", False)):
+                entry["virtual_roller_detached_clone"] = True
             if entry["detached"]:
                 window = self.detached_window_for_tile(tile)
                 entry["geometry"] = rect_to_data(window.geometry() if window is not None else None)
@@ -838,6 +1949,9 @@ class Canvas(QtWidgets.QWidget):
             "roller_visible_count": self.roller_visible_count(),
             "roller_speed": self.roller_speed_px_per_sec(),
             "roller_paused": self.roller_paused(),
+            "virtual_roller_sources": self.infinite_roller_sources(),
+            "virtual_roller_scroll_index": int(self._virtual_roller_scroll_index),
+            "virtual_roller_saved_states": self.infinite_roller_saved_states(),
         }
 
     def restore_detached_state(self, entries: List[Dict[str, Any]]):
@@ -848,6 +1962,8 @@ class Canvas(QtWidgets.QWidget):
             if not (0 <= idx < len(self.tiles)):
                 continue
             tile = self.tiles[idx]
+            if bool(entry.get("virtual_roller_detached_clone", False)):
+                setattr(tile, "_virtual_roller_detached_clone", True)
             self.detach_tile(tile)
             window = self.detached_window_for_tile(tile)
             if window is None:
@@ -907,6 +2023,14 @@ class Canvas(QtWidgets.QWidget):
     def _notify_playlist_changed(self):
         if self._closing_for_app_exit:
             return
+        if self._virtual_roller_mode() is not None and not self._virtual_roller_pool_updating:
+            source_count = len(self._virtual_roller_sources)
+            desired_pool = self._virtual_roller_desired_docked_pool_size(source_count)
+            if source_count > 0 and len(self.docked_tiles()) != desired_pool:
+                try:
+                    self._configure_virtual_roller_tiles()
+                except RuntimeError:
+                    logger.warning("virtual roller reconfiguration after playlist change failed", exc_info=True)
         if self._roller_mode() is not None:
             try:
                 self.relayout()
@@ -1005,17 +2129,9 @@ class Canvas(QtWidgets.QWidget):
                 except Exception:
                     logger.debug("opacity mode owner sync skipped", exc_info=True)
 
-    def add_tile(self):
-        playing_tiles = [t for t in self.tiles if t.mediaplayer.is_playing()]
-        for t in playing_tiles:
-            t.pause()
-
-        # ================== 🟢 핵심 변경 3: 타일 생성 시 엔진 전달 ==================
+    def _create_tile_widget(self) -> VideoTile:
         tile = VideoTile(self, vlc_instance=self.vlc_instance)
-        # ======================================================================
-
         tile.double_clicked.connect(self._on_tile_double_clicked)
-        self.tiles.append(tile)
         mw = self.window()
         if mw is not None:
             try:
@@ -1023,11 +2139,20 @@ class Canvas(QtWidgets.QWidget):
             except (AttributeError, RuntimeError):
                 logger.debug("new tile border-visible sync skipped", exc_info=True)
             try:
-                tile.set_compact_mode(bool(getattr(mw, "compact_action").isChecked()))
+                tile.set_compact_mode(bool(getattr(mw, "_is_compact_mode")()))
             except (AttributeError, RuntimeError):
                 logger.debug("new tile compact-mode sync skipped", exc_info=True)
+        return tile
+
+    def add_tile(self):
+        playing_tiles = [t for t in self.tiles if t.mediaplayer.is_playing()]
+        for t in playing_tiles:
+            t.pause()
+        tile = self._create_tile_widget()
+        self.tiles.append(tile)
         tile.show()
         adopted_into_opacity_mode = False
+        mw = self.window()
         if mw is not None:
             try:
                 active_opacity_owner = getattr(mw, "active_opacity_mode_widget", lambda: None)()
@@ -1099,9 +2224,9 @@ class Canvas(QtWidgets.QWidget):
                     t.set_external_subtitle_for_path(path, subtitle_map_to_move.get(path), overwrite=False)
             self.relayout()
             mw = self.window()
-            if leaving_spotlight and mw is not None and hasattr(mw, "compact_action"):
+            if leaving_spotlight and mw is not None and hasattr(mw, "_is_compact_mode"):
                 try:
-                    if not mw.compact_action.isChecked():
+                    if not mw._is_compact_mode():
                         for t in self.tiles:
                             t.show_controls(True)
                 except RuntimeError:
@@ -1183,6 +2308,10 @@ class Canvas(QtWidgets.QWidget):
         if self._apply_roller_layout(docked_tiles, W, H):
             self._sync_opacity_mode_owners()
             return
+        if self._apply_balanced_auto_layout(docked_tiles, W, H):
+            self._set_roller_running(False)
+            self._sync_opacity_mode_owners()
+            return
 
         cols, rows = self._grid_dimensions_for_count(n)
         self._set_roller_running(False)
@@ -1207,6 +2336,40 @@ class Canvas(QtWidgets.QWidget):
                     continue
                 t.current_index = 0
             t.play()
+
+    def activate_roller_after_source_change(self):
+        if self._roller_mode() is None:
+            self.play_all()
+            return
+        docked_tiles = list(self.docked_tiles())
+        if not docked_tiles:
+            return
+        for tile in docked_tiles:
+            playlist = [str(path or "").strip() for path in list(getattr(tile, "playlist", []) or [])]
+            if not playlist:
+                continue
+            try:
+                current_index = int(getattr(tile, "current_index", -1))
+            except (TypeError, ValueError):
+                current_index = -1
+            if not (0 <= current_index < len(playlist)):
+                current_index = 0
+                tile.current_index = 0
+            try:
+                player = getattr(tile, "mediaplayer", None)
+                if player is None:
+                    continue
+                if player.get_media() is None:
+                    if not tile.set_media(playlist[current_index], show_error_dialog=False):
+                        continue
+                tile._apply_current_playlist_start_position()
+            except Exception:
+                logger.debug("roller source-change activation failed for tile", exc_info=True)
+        self._roller_playback_active = True
+        self._roller_last_visible_tiles = set()
+        viewport_rect = QtCore.QRect(0, 0, self.width(), self.height())
+        self._sync_roller_playback(docked_tiles, viewport_rect)
+        self._set_roller_running(not self.roller_paused() and self._roller_has_media(docked_tiles))
 
 
     def stop_all(self):
@@ -1276,7 +2439,7 @@ class Canvas(QtWidgets.QWidget):
             except RuntimeError:
                 logger.debug("main window fullscreen-state probe failed while clearing spotlight", exc_info=True)
                 is_fullscreen = False
-            if (not is_fullscreen) and hasattr(mw, "compact_action") and not mw.compact_action.isChecked():
+            if (not is_fullscreen) and hasattr(mw, "_is_compact_mode") and not mw._is_compact_mode():
                 for t in self.tiles:
                     t.show_controls(True)
             if resume_tiles:

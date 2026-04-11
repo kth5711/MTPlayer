@@ -25,7 +25,7 @@ def on_playlist_context_menu(main, pos):
     tree = main.playlist_widget
     _sync_context_menu_selection(tree, pos)
     menu, actions = _build_playlist_context_menu(main)
-    _apply_playlist_context_action_state(tree.selectedItems(), actions)
+    _apply_playlist_context_action_state(main, tree.selectedItems(), actions)
     selected = menu.exec(tree.mapToGlobal(pos))
     _run_playlist_context_action(main, selected, actions)
 
@@ -45,6 +45,9 @@ def _build_playlist_context_menu(main):
         "folder": menu.addAction(tr(main, "폴더 열기")),
     }
     menu.addSeparator()
+    actions["clear_tile"] = menu.addAction(tr(main, "타일 비우기"))
+    actions["clear_all"] = menu.addAction(tr(main, "전체 비우기"))
+    menu.addSeparator()
     actions["delete"] = menu.addAction(tr(main, "리스트삭제"))
     actions["trash"] = menu.addAction(tr(main, "휴지통으로"))
     menu.addSeparator()
@@ -52,9 +55,12 @@ def _build_playlist_context_menu(main):
     return menu, actions
 
 
-def _apply_playlist_context_action_state(items, actions):
+def _apply_playlist_context_action_state(main, items, actions):
     has_file = _selected_meta_type(items, {"file"})
     has_path_item = _selected_meta_type(items, {"file", "bookmark"})
+    has_tile_selection = bool(_selected_tile_indices_from_items(items))
+    actions["clear_tile"].setEnabled(has_tile_selection)
+    actions["clear_all"].setEnabled(_has_any_playlist_content(main))
     if not has_path_item:
         actions["delete"].setEnabled(False)
     if not has_file:
@@ -72,6 +78,40 @@ def _selected_meta_type(items, kinds: set[str]) -> bool:
     return False
 
 
+def _selected_tile_indices_from_items(items) -> set[int]:
+    indices: set[int] = set()
+    for item in items:
+        meta = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if not isinstance(meta, dict):
+            continue
+        if str(meta.get("type") or "") not in {"tile", "file", "bookmark"}:
+            continue
+        try:
+            tile_index = int(meta.get("tile_idx", -1))
+        except Exception:
+            continue
+        if tile_index >= 0:
+            indices.add(tile_index)
+    return indices
+
+
+def _has_any_playlist_content(main) -> bool:
+    for tile in getattr(main.canvas, "tiles", []) or []:
+        if getattr(tile, "playlist", None):
+            return True
+        try:
+            if getattr(tile, "_current_media_kind", "none") != "none":
+                return True
+        except Exception:
+            pass
+        try:
+            if getattr(tile, "mediaplayer", None) and tile.mediaplayer.get_media() is not None:
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def _run_playlist_context_action(main, selected, actions):
     if selected is None:
         return
@@ -79,6 +119,10 @@ def _run_playlist_context_action(main, selected, actions):
         main._pl_open_files_into_tile()
     elif selected is actions["folder"]:
         main._pl_open_folder_into_tile()
+    elif selected is actions["clear_tile"]:
+        main._clear_selected_tile_playlists()
+    elif selected is actions["clear_all"]:
+        main._clear_all_tile_playlists()
     elif selected is actions["delete"]:
         main._pl_delete_selected(trash=False)
     elif selected is actions["trash"]:

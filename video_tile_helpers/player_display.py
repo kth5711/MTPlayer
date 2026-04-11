@@ -199,15 +199,6 @@ def set_transform_mode(tile, mode: str):
     _show_mode_status_overlay(tile, getattr(tile, "transform_mode", "none"), tile.TRANSFORM_MODE_LABELS)
 
 
-def set_zoom_percent(tile, percent: int):
-    normalized = _normalize_zoom_percent(percent)
-    if normalized == int(getattr(tile, "zoom_percent", 100) or 100):
-        return
-    tile.zoom_percent = normalized
-    tile._apply_display_mode()
-    _show_zoom_status_overlay(tile, normalized)
-
-
 def _show_mode_status_overlay(tile, mode: str, labels: dict[str, str]) -> None:
     show_overlay = getattr(tile, "_show_status_overlay", None)
     if not callable(show_overlay):
@@ -226,7 +217,6 @@ def apply_display_mode(tile):
     geometry = tile._display_geometry_spec()
     _reset_video_geometry(player)
     _apply_display_mode_to_player(player, getattr(tile, "display_mode", "fit"), geometry)
-    _apply_zoom_to_player(player, getattr(tile, "display_mode", "fit"), getattr(tile, "zoom_percent", 100))
 
 
 def _reset_video_geometry(player):
@@ -263,25 +253,3 @@ def _call_player_setter(setter, value):
     except Exception:
         pass
 
-
-def _apply_zoom_to_player(player, mode: str, zoom_percent: int):
-    normalized = _normalize_zoom_percent(zoom_percent)
-    if normalized == 100:
-        if mode == "original":
-            _call_player_setter(player.video_set_scale, 1.0)
-        return
-    _call_player_setter(player.video_set_scale, float(normalized) / 100.0)
-
-
-def _normalize_zoom_percent(percent: int) -> int:
-    try:
-        value = int(percent)
-    except Exception:
-        value = 100
-    return max(25, min(400, value))
-
-
-def _show_zoom_status_overlay(tile, percent: int) -> None:
-    show_overlay = getattr(tile, "_show_status_overlay", None)
-    if callable(show_overlay):
-        show_overlay(tr(tile, "확대 {percent}%", percent=int(percent)))

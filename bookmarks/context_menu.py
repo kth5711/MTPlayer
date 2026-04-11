@@ -4,6 +4,11 @@ import sys
 from typing import Any
 
 from PyQt6 import QtCore, QtWidgets
+from .additions import (
+    adjust_bookmark_end_delta as adjust_bookmark_end_delta_impl,
+    set_bookmark_end_fixed_duration as set_bookmark_end_fixed_duration_impl,
+    set_bookmark_end_from_open_tiles as set_bookmark_end_from_open_tiles_impl,
+)
 from .open import load_targets_into_tiles as load_targets_into_tiles_impl
 from i18n import tr
 from .state import bookmark_end_ms
@@ -34,6 +39,9 @@ def show_bookmark_context_menu(main, widget: QtWidgets.QTreeWidget, pos: QtCore.
     if has_selection:
         menu.addSeparator()
     if _has_selection(main):
+        selected_entries = list(_selected_entries(main, direct_only=False))
+        if selected_entries:
+            _add_end_edit_actions(main, menu, selected_entries)
         menu.addAction(tr(main, "카테고리변경"), main._classify_selected_bookmarks)
         menu.addAction(tr(main, "북마크삭제"), main._delete_selected_bookmarks)
     menu.addAction(tr(main, "카테고리추가..."), main._add_bookmark_category)
@@ -49,16 +57,27 @@ def _add_open_actions(main, menu, first_targets, bookmark_targets, selected_path
         )
         added = True
     if bookmark_targets:
+        range_targets = [target for target in bookmark_targets if target[2] is not None]
         menu.addAction(
             tr(main, "선택 북마크 분배 열기 ({count}개)", count=len(bookmark_targets)),
             lambda m=main, targets=bookmark_targets: load_targets_into_tiles_impl(
                 m,
                 targets,
                 tr(m, "북마크 분배"),
-                prefer_open_parent_tiles=True,
             ),
         )
         added = True
+        if range_targets:
+            menu.addAction(
+                tr(main, "선택 북마크 구간반복 열기 ({count}개)", count=len(range_targets)),
+                lambda m=main, targets=range_targets: load_targets_into_tiles_impl(
+                    m,
+                    targets,
+                    tr(m, "북마크 구간반복"),
+                    loop_ranges=True,
+                ),
+            )
+            added = True
     if selected_path:
         menu.addAction(
             tr(main, "폴더 열기(경로)"),
@@ -66,6 +85,40 @@ def _add_open_actions(main, menu, first_targets, bookmark_targets, selected_path
         )
         added = True
     return added
+
+
+def _add_end_edit_actions(main, menu, selected_entries: list[dict[str, Any]]) -> None:
+    end_menu = menu.addMenu(tr(main, "끝 시점"))
+    end_menu.addAction(
+        tr(main, "현재 위치로 설정"),
+        lambda m=main, entries=list(selected_entries): set_bookmark_end_from_open_tiles_impl(m, entries),
+    )
+    end_menu.addSeparator()
+    end_menu.addAction(
+        tr(main, "구간 5초로 설정"),
+        lambda m=main, entries=list(selected_entries): set_bookmark_end_fixed_duration_impl(m, entries, 5),
+    )
+    end_menu.addAction(
+        tr(main, "구간 10초로 설정"),
+        lambda m=main, entries=list(selected_entries): set_bookmark_end_fixed_duration_impl(m, entries, 10),
+    )
+    end_menu.addSeparator()
+    end_menu.addAction(
+        tr(main, "끝 -1초"),
+        lambda m=main, entries=list(selected_entries): adjust_bookmark_end_delta_impl(m, entries, -1000),
+    )
+    end_menu.addAction(
+        tr(main, "끝 +1초"),
+        lambda m=main, entries=list(selected_entries): adjust_bookmark_end_delta_impl(m, entries, 1000),
+    )
+    end_menu.addAction(
+        tr(main, "끝 -5초"),
+        lambda m=main, entries=list(selected_entries): adjust_bookmark_end_delta_impl(m, entries, -5000),
+    )
+    end_menu.addAction(
+        tr(main, "끝 +5초"),
+        lambda m=main, entries=list(selected_entries): adjust_bookmark_end_delta_impl(m, entries, 5000),
+    )
 
 
 def _has_selection(main) -> bool:

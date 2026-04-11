@@ -54,6 +54,8 @@ def _clear_existing_media(tile):
 
 def _update_tile_title(tile, path: str):
     name = media_source_display_name(path)
+    if hasattr(tile, "_restore_media_title_hitbox"):
+        tile._restore_media_title_hitbox()
     fm = tile.title.fontMetrics()
     width = tile.title.maximumWidth()
     tile.title.setText(fm.elidedText(name, QtCore.Qt.TextElideMode.ElideRight, width))
@@ -76,6 +78,7 @@ def _reset_loop_state(tile):
     tile.loop_enabled = False
     tile._playlist_bookmark_end_ms = None
     tile._playlist_bookmark_guard_active = False
+    tile._playlist_bookmark_auto_advance = False
     tile._update_ab_controls()
 
 

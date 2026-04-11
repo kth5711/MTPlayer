@@ -344,6 +344,53 @@ def fullscreen_hover_tile_at_global(main, pos: QtCore.QPoint):
     return hover_tile
 
 
+def resolve_edge_hover_ui_mode(
+    main,
+    pos: QtCore.QPoint,
+    hover_tile,
+    win_geom: QtCore.QRect,
+    *,
+    hidden_callback=None,
+):
+    desired_mode = "hidden"
+    desired_tile = None
+    win_height = max(1, int(win_geom.height()))
+    top_zone_height = max(48, min(180, int(round(win_height * 0.11))))
+    if hover_tile is not None and not main._is_compact_mode():
+        try:
+            tile_global = QtCore.QRect(hover_tile.mapToGlobal(QtCore.QPoint(0, 0)), hover_tile.size())
+            local_y = pos.y() - tile_global.top()
+            tile_height = max(1, int(tile_global.height()))
+            bottom_zone_height = max(
+                min(tile_height, max(24, int(round(win_height * 0.04)))),
+                min(
+                    tile_height,
+                    max(
+                        max(24, int(round(win_height * 0.04))),
+                        min(160, int(round(tile_height * 0.20))),
+                    ),
+                ),
+            )
+            if local_y >= max(0, tile_height - bottom_zone_height):
+                desired_mode = "tile"
+                desired_tile = hover_tile
+        except RuntimeError:
+            logger.debug("hover tile local position probe failed", exc_info=True)
+
+    if desired_mode != "tile":
+        y = pos.y()
+        if y <= win_geom.top() + top_zone_height:
+            desired_mode = "top"
+        else:
+            if callable(hidden_callback):
+                try:
+                    hidden_callback()
+                except RuntimeError:
+                    logger.debug("hover hidden callback skipped", exc_info=True)
+            desired_mode = "hidden"
+    return desired_mode, desired_tile
+
+
 def queue_fullscreen_hover(main, pos: QtCore.QPoint):
     if not main._is_fullscreen():
         return
@@ -417,29 +464,13 @@ def handle_fullscreen_hover_at(
             cursor_was_hidden = False
     hover_tile = main._fullscreen_hover_tile_at_global(pos)
 
-    desired_mode = "hidden"
-    desired_tile = None
-    if hover_tile is not None and not main._is_compact_mode():
-        try:
-            local = hover_tile.mapFromGlobal(pos)
-            height = hover_tile.rect().height()
-            if local.y() >= (height - 80):
-                desired_mode = "tile"
-                desired_tile = hover_tile
-        except RuntimeError:
-            logger.debug("fullscreen hover tile local position probe failed", exc_info=True)
-
-    if desired_mode != "tile":
-        y = pos.y()
-        win_geom = main.geometry()
-        if y <= win_geom.top() + 100:
-            desired_mode = "top"
-        else:
-            try:
-                main.cursor_hide_timer.start()
-            except RuntimeError:
-                logger.debug("cursor hide timer start skipped in fullscreen hover", exc_info=True)
-            desired_mode = "hidden"
+    desired_mode, desired_tile = resolve_edge_hover_ui_mode(
+        main,
+        pos,
+        hover_tile,
+        main.geometry(),
+        hidden_callback=lambda: main.cursor_hide_timer.start(),
+    )
 
     main._apply_fullscreen_ui_mode(desired_mode, desired_tile)
     if preserve_hidden_cursor and cursor_was_hidden and desired_mode == "hidden":
@@ -469,6 +500,10 @@ def event_filter(main, obj, event):
     if et == QtCore.QEvent.Type.KeyRelease and main._handle_key_release_event(event):
         return True
     if et == QtCore.QEvent.Type.MouseMove:
+        try:
+            main._handle_windowed_ui_hover_at(event.globalPosition().toPoint())
+        except RuntimeError:
+            logger.debug("windowed ui hover handling skipped from eventFilter", exc_info=True)
         try:
             main._queue_fullscreen_hover(event.globalPosition().toPoint())
         except RuntimeError:
@@ -576,11 +611,8 @@ def exit_fullscreen(main):
     try:
         if opacity_mode_active:
             pass
-        elif not getattr(main, "compact_action", None) or not main.compact_action.isChecked():
-            main._show_ui()
         else:
-            main._show_top_ui(False)
-            main._show_all_tile_controls(False)
+            main._sync_windowed_ui_from_compact_mode()
         main._fullscreen_ui_mode = None
         main._fullscreen_ui_tile = None
         main._show_cursor()

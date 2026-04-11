@@ -119,6 +119,14 @@ def _build_playlist_filter_row(main, layout):
     main.playlist_filter_edit.textChanged.connect(lambda _text: main.request_playlist_refresh(force=True, delay_ms=120))
     style_aux_dock_filter_edit(main.playlist_filter_edit)
     row.addWidget(main.playlist_filter_edit, 1)
+    main.playlist_clear_selected_button = QtWidgets.QPushButton(tr(main, "타일 비우기"))
+    main.playlist_clear_selected_button.clicked.connect(main._clear_selected_tile_playlists)
+    style_aux_dock_button(main.playlist_clear_selected_button)
+    row.addWidget(main.playlist_clear_selected_button)
+    main.playlist_clear_all_button = QtWidgets.QPushButton(tr(main, "전체 비우기"))
+    main.playlist_clear_all_button.clicked.connect(main._clear_all_tile_playlists)
+    style_aux_dock_button(main.playlist_clear_all_button)
+    row.addWidget(main.playlist_clear_all_button)
     main.playlist_sort_label = QtWidgets.QLabel(tr(main, "정렬"))
     style_aux_dock_label(main.playlist_sort_label)
     row.addWidget(main.playlist_sort_label)
@@ -198,6 +206,12 @@ def refresh_playlist_ui_texts(main):
     edit = getattr(main, "playlist_filter_edit", None)
     if edit is not None:
         edit.setPlaceholderText(tr(main, "플레이리스트 검색 (파일명/경로)"))
+    clear_selected = getattr(main, "playlist_clear_selected_button", None)
+    if clear_selected is not None:
+        clear_selected.setText(tr(main, "타일 비우기"))
+    clear_all = getattr(main, "playlist_clear_all_button", None)
+    if clear_all is not None:
+        clear_all.setText(tr(main, "전체 비우기"))
     label = getattr(main, "playlist_sort_label", None)
     if label is not None:
         label.setText(tr(main, "정렬"))

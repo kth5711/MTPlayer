@@ -55,7 +55,7 @@ Current install policy:
 - prefer standalone FFmpeg such as `C:\ffmpeg\bin\ffmpeg.exe`
 - require VLC desktop installation for `python-vlc`
 - include `yt-dlp` so page URLs like YouTube can be resolved into playable stream URLs
-- use Conda when available, but plain Python `venv` is also supported
+- Conda and plain Python `venv` are both supported
 - default install flow now tries to provision missing FFmpeg/VLC automatically when `winget` is available
 - allow CPU-only install when NVIDIA GPU / CUDA is not available
 - install the `scene analysis` stack only when the operator explicitly passes `-InstallSceneAnalysis`
@@ -75,7 +75,7 @@ Install split quick reference:
   - adds `numpy`, `opencv-python`, `scenedetect`, `pillow`
   - adds `torch`, `transformers`, `huggingface_hub`, `safetensors`, `accelerate`, `sentencepiece`
 - subtitle helpers:
-  - still separate from the main app env
+  - can live in the main app env when that env is stable
   - ASR helper and `llama.cpp` are managed manually
 
 Dependency split:
@@ -87,8 +87,8 @@ Dependency split:
   AI Python: `torch`, `transformers`, `huggingface_hub`, `safetensors`, `accelerate`, `sentencepiece`
   Decode/runtime: `TorchCodec` 우선, 실패 시 `OpenCV` 폴백
 - Subtitle generation:
-  Helper env Python: `faster-whisper`, `ctranslate2`, `av`
-  Recommended Windows GPU helper runtime: `torch` CUDA 12.x wheel in the helper env so `cuBLAS/cuDNN` DLLs are available
+  Python runtime: `faster-whisper`, `ctranslate2`, `av`
+  Recommended Windows GPU runtime: `torch` CUDA 12.x wheel in the same env or helper env so `cuBLAS/cuDNN` DLLs are available
   Default ASR model used by the app: `mobiuslabsgmbh/faster-whisper-large-v3-turbo`
 - Subtitle translation:
   External runtime: `llama.cpp` (`llama-server.exe` preferred)
@@ -96,8 +96,8 @@ Dependency split:
   Current app behavior: remembers selected `llama` binary, GGUF path, source language, target language after first successful selection
 
 Optional subtitle stack:
-1. If the main app env is already stable on `CUDA 12.x`, you can install ASR dependencies into that same env.
-2. Same-env activation examples:
+1. Start with the main app env if that PC is already stable on `CUDA 12.x`.
+2. Main-env activation examples:
 
 ```powershell
 conda activate multi-play
@@ -107,7 +107,7 @@ conda activate multi-play
 .\.venv-multi-play\Scripts\activate
 ```
 
-3. Then install the GPU ASR packages:
+3. Install the GPU ASR packages there:
 
 ```powershell
 python -m pip install --upgrade pip
@@ -115,7 +115,7 @@ pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
 pip install faster-whisper av
 ```
 
-4. If you are on `CUDA 13`, or that PC has DLL/runtime conflicts, create a separate helper env for ASR instead.
+4. Only if you are on `CUDA 13`, or that PC shows DLL/runtime conflicts, move ASR into a separate helper env.
 5. Separate helper env creation/activation examples:
 
 ```powershell
@@ -128,7 +128,7 @@ py -3.11 -m venv .venv-multi-play-asr
 .\.venv-multi-play-asr\Scripts\activate
 ```
 
-6. Then run the same GPU ASR package install commands from step 3.
+6. Then run the same GPU ASR package install commands from step 3 in that helper env.
 
 7. CPU-only fallback:
 
@@ -170,7 +170,7 @@ GPU generation guide:
   - Same recommendation as RTX 30.
   - If VRAM is comfortable, translation can move from `Q4_K_M` to `Q5_K_M` or higher.
 - RTX 50:
-  - Separate helper env is still the default recommendation.
+  - Same env can work if the main env is already stable, but `CUDA 13` or DLL/runtime conflict cases should still move subtitles into a separate helper env.
   - Prefer CUDA 12.x helper tooling for portability across PCs.
   - Current project guidance is separate subtitle helper env + `torch` CUDA 12.8 wheel + `llama.cpp` Windows CUDA 12 build.
   - For translation, start with `TranslateGemma 4B Q5_K_M`.
@@ -183,9 +183,26 @@ Notes on the 10~50 guide:
 Launcher notes:
 - install writes `run_multi_play_local.bat` in the project root using the resolved `conda` or `python` executable path
 - checked-in `run_multi_play.bat` now delegates to `run_multi_play_local.bat` first when that launcher exists
-- checked-in launchers target `app\main.py`, while keeping `run_multi_play.bat` and `run_multi_play.vbs` in the repo root as the Windows entrypoints
 
 Notes for AI agents:
 - read `install_manifest.json` before running the installer
 - do not assume CUDA is available just because NVIDIA hardware exists
 - after install, treat `post_install_check.py` as the source of truth for success/failure
+## Portable
+
+포터블 조립은 2단계다.
+
+1. 앱 트리와 런타임 폴더 구조 만들기
+2. 포터블 `.venv` 만들고 requirements 설치하기
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install\assemble_portable.ps1 `
+  -TargetDir C:\work\Multi-Play-Portable
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install\setup_portable_env.ps1 `
+  -PortableRoot C:\work\Multi-Play-Portable
+```
+
+추가 런타임을 같이 복사하고 싶으면 `-FfmpegSource`, `-VlcSource`, `-LlamaSource`, `-GgufModels`, `-WhisperModelDirs`를 넘긴다.

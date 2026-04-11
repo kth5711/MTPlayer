@@ -228,13 +228,13 @@ def toggle_play(tile):
 
 def stop(tile):
     if tile.is_static_image():
-        tile.lbl_time.setText(tr(tile, "이미지"))
+        tile._set_time_label_text(tr(tile, "이미지"))
         tile._update_play_button()
         return
     if tile.mediaplayer.is_playing():
         tile.mediaplayer.pause()
     tile.mediaplayer.stop()
-    tile.lbl_time.setText("00:00 / 00:00")
+    tile._set_time_label_text("00:00 / 00:00")
     _refresh_stop_bookmarks(tile)
     tile._update_play_button()
     _refresh_playlist_play_state(tile)

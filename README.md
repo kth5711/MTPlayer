@@ -1,8 +1,7 @@
-# MTPlayer
+# MP
 
 - AI-friendly Windows install bundle: `install/README.md`
-- Windows launchers stay in the repo root, and the thin app entry modules now live under `app/`.
-- Root Windows entrypoints are `run_multi_play.bat` and `run_multi_play.vbs`.
+- Portable single-env layout guide: [PORTABLE.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/PORTABLE.md)
 - `씬분석` 스택은 이제 옵션 설치다. 기본 플레이어만 쓰면 `install/install_windows.ps1` 기본 실행으로 충분하고, 필요한 경우에만 `-InstallSceneAnalysis`를 붙인다.
 - Open-source notice set:
   - [LICENSE](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/LICENSE)
@@ -47,9 +46,9 @@ powershell -ExecutionPolicy Bypass -File .\install\install_windows.ps1 -InstallS
   decode/runtime: `TorchCodec` 우선, 실패 시 `OpenCV` 폴백
 - 자막 생성/번역:
   기본 설치 번들에 포함되지 않는 optional helper 스택이다.
-  - 자막 생성(ASR): 별도 helper env 권장. `faster-whisper`, `ctranslate2`, `av`
+  - 자막 생성(ASR): `faster-whisper`, `ctranslate2`, `av`
   - 자막 번역: `llama.cpp` (`llama-server.exe` 권장) + `TranslateGemma` GGUF
-  - Windows GPU 경로는 메인 앱 env와 분리하는 쪽이 안전하다. 현재 프로젝트 기준 권장 helper env는 CUDA 12.x 계열이다.
+  - Windows GPU 경로는 `CUDA 13` 또는 불안정 조합에서만 메인 앱 env와 분리하는 쪽을 우선 권장한다. `CUDA 12.x` 기준으로 메인 env가 안정적이면 같은 env를 그대로 써도 된다.
   - 앱은 첫 실행 후 `MULTIPLAY_SUBTITLE_PYTHON`, `MULTIPLAY_LLAMA_BIN`, `MULTIPLAY_TRANSLATE_GGUF` 또는 dialog에서 고른 경로를 config에 기억한다.
 
 ## Licensing
@@ -61,7 +60,7 @@ powershell -ExecutionPolicy Bypass -File .\install\install_windows.ps1 -InstallS
 
 ## Manual Install
 
-Windows에서 수동으로 설치할 때는 아래 순서가 가장 단순하다. 기본 권장 경로는 `Conda + pip`지만, 일반 Python `venv`로도 같은 구성을 만들 수 있다.
+Windows에서 수동으로 설치할 때는 아래 순서가 가장 단순하다. `Conda`와 일반 Python `venv` 모두 같은 구성을 만들 수 있다.
 
 ### 설치 조합 한눈에 보기
 
@@ -70,7 +69,7 @@ Windows에서 수동으로 설치할 때는 아래 순서가 가장 단순하다
 | 기본 플레이어 | `PyQt6`, `python-vlc`, `yt-dlp`, `VLC`, `FFmpeg` | `numpy`, `opencv-python`, `scenedetect`, `pillow`, `torch`, `transformers`, 자막 AI helper |
 | 플레이어 + 씬변화 | 기본 플레이어 + `numpy`, `opencv-python`, `scenedetect`, `pillow` | `torch`, `transformers`, 자막 AI helper |
 | 플레이어 + 유사씬 AI | 플레이어 + 씬변화 + `torch`, `transformers`, `huggingface_hub`, `safetensors`, `accelerate`, `sentencepiece` | 자막 AI helper |
-| 자막 생성 helper | 별도 helper env + `torch`, `faster-whisper`, `av` | 메인 앱/씬분석 패키지와는 분리 권장 |
+| 자막 생성 helper | 메인 env 또는 별도 helper env + `torch`, `faster-whisper`, `av` | `CUDA 13`/불안정 조합이면 분리 권장 |
 | 자막 번역 helper | `llama.cpp`, GGUF | Python AI stack에 묶지 않음 |
 
 ### 0. 런타임 선택
@@ -166,7 +165,27 @@ pip install torchcodec
 
 ### 4. 자막 생성 helper
 
-자막 생성은 메인 앱 env와 분리하는 것을 권장한다.
+자막 생성은 기본적으로 메인 앱 env에서도 가능하다. 다만 `CUDA 13` 조합이거나, `faster-whisper` / `ctranslate2` / `av` 설치 충돌이 있는 PC에서는 별도 helper env가 더 안전하다.
+
+메인 env에 같이 넣는 예:
+
+Conda:
+
+```powershell
+conda activate multi-play
+pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
+pip install faster-whisper av
+```
+
+일반 Python `venv`:
+
+```powershell
+.\.venv-multi-play\Scripts\activate
+pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
+pip install faster-whisper av
+```
+
+분리 env를 쓰는 예:
 
 Conda:
 
@@ -245,3 +264,25 @@ setx MULTIPLAY_TRANSLATE_GGUF "C:\path\to\model.gguf"
   - 특히 `CUDA 13` 계열이나 노트북/드라이버 조합이 불안정한 PC에서는 subtitle stack만 별도 관리하는 편이 안전하다.
   - 반대로 `CUDA 12.x` 기준으로 메인 env가 안정적이면 같은 env에 넣어도 된다.
 - 자세한 Windows 설치 순서는 [install/README.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/install/README.md)의 `Optional subtitle stack`과 `GPU generation guide`를 따른다.
+
+## Lint
+
+- 구조 lint 기본 규칙은 `신규 파일 실코드 200줄 이하`, `신규/증가 함수 실코드 30줄 이하`다.
+- 레거시 대형 파일은 한 번에 전부 막지 않고, `HEAD` 대비 더 커진 경우만 구조 lint 에서 실패시킨다.
+- 기본 실행은 `python3 tools/lint.py <변경한 .py 파일>` 이고, 인자를 생략하면 현재 변경된 Python 파일을 대상으로 돈다.
+- 추가로 `ruff`를 같이 쓰려면 `python3 -m pip install ruff` 로 설치한다.
+## Portable
+
+포터블은 단순 파일 복사만으로 끝나지 않는다. 앱 트리 복사, `.venv` 생성, 런타임 폴더(`ffmpeg`, `vlc`, `llama`, `models`) 배치가 필요하다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install\assemble_portable.ps1 `
+  -TargetDir C:\work\Multi-Play-Portable
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install\setup_portable_env.ps1 `
+  -PortableRoot C:\work\Multi-Play-Portable
+```
+
+상세 구조와 옵션은 [PORTABLE.md](/mnt/c/Users/dosky/anaconda3/envs/sgt/Multi-Play/PORTABLE.md)를 본다.

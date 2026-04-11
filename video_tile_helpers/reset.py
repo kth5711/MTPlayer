@@ -22,6 +22,7 @@ def _reset_playlist_state(tile: "VideoTile"):
     tile._clear_playlist_entry_start_positions()
     tile._playlist_bookmark_end_ms = None
     tile._playlist_bookmark_guard_active = False
+    tile._playlist_bookmark_auto_advance = False
     tile.external_subtitles.clear()
     tile.posA = None
     tile.posB = None
@@ -51,6 +52,8 @@ def _reset_track_controls(tile: "VideoTile"):
 
 def _reset_title(tile: "VideoTile"):
     tile.title.setText(tr(tile, "(열기)"))
+    if hasattr(tile, "_fit_open_title_hitbox"):
+        tile._fit_open_title_hitbox()
     tile.title.setToolTip(tr(tile, "이 타일에 미디어를 열려면 클릭하세요"))
 
 
